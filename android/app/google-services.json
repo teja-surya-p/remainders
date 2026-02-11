@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "44525309522",
+    "project_id": "reaminder-app",
+    "storage_bucket": "reaminder-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:44525309522:android:f614284d0319cb5869198b",
+        "android_client_info": {
+          "package_name": "com.example.snooze_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBIdq0Hix65EQVRlf6W1dvhvZ0ppP-922Q"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
