@@ -12,7 +12,20 @@
           "package_name": "com.example.snooze_app"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "44525309522-uq2fs9e1jof30jlha67f07jad2dugcfn.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.snooze_app",
+            "certificate_hash": "cf138f277950ce819aada219e662fb4a72cf00ab"
+          }
+        },
+        {
+          "client_id": "44525309522-2o85349eaq10kfh3q09hmfbf2hriba3p.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyBIdq0Hix65EQVRlf6W1dvhvZ0ppP-922Q"
@@ -20,7 +33,19 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "44525309522-2o85349eaq10kfh3q09hmfbf2hriba3p.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "44525309522-a7ddqhk7dka77sj80n9hp9c1juclshh9.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.snoozeApp"
+              }
+            }
+          ]
         }
       }
     }
