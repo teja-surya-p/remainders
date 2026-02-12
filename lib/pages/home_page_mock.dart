@@ -109,7 +109,11 @@ class _ReminderItem {
   final String title;
   final String subtitle;
   final bool done;
-  _ReminderItem({required this.title, required this.subtitle, required this.done});
+  _ReminderItem({
+    required this.title,
+    required this.subtitle,
+    required this.done,
+  });
 }
 
 class _TodaySummaryCard extends StatelessWidget {
@@ -152,7 +156,11 @@ class _InfoCard extends StatelessWidget {
   final String title;
   final String subtitle;
 
-  const _InfoCard({required this.icon, required this.title, required this.subtitle});
+  const _InfoCard({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -170,7 +178,10 @@ class _InfoCard extends StatelessWidget {
                 children: [
                   Text(
                     title,
-                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                   const SizedBox(height: 4),
                   Text(subtitle),
