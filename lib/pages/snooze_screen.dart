@@ -1,6 +1,7 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+
+import '../app_services.dart';
 
 class SnoozeScreen extends StatefulWidget {
   final String reminderId;
@@ -22,44 +23,48 @@ class _SnoozeScreenState extends State<SnoozeScreen> {
 
   Future<void> _pickExact() async {
     final now = DateTime.now();
+    final date = await showDatePicker(
+      context: context,
+      firstDate: DateTime(now.year, now.month, now.day),
+      lastDate: DateTime(now.year + 5),
+      initialDate: _exact ?? now,
+    );
+    if (date == null) return;
+
     final time = await showTimePicker(
       context: context,
-      initialTime: TimeOfDay.fromDateTime(now.add(const Duration(minutes: 5))),
+      initialTime: TimeOfDay.fromDateTime(
+        _exact ?? now.add(const Duration(minutes: 5)),
+      ),
     );
     if (time == null) return;
 
-    var dt = DateTime(now.year, now.month, now.day, time.hour, time.minute);
-    if (dt.isBefore(now)) dt = dt.add(const Duration(days: 1));
+    final dt = DateTime(
+      date.year,
+      date.month,
+      date.day,
+      time.hour,
+      time.minute,
+    );
+    if (!dt.isAfter(now)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Choose a future date and time.')),
+      );
+      return;
+    }
     setState(() => _exact = dt);
   }
 
   Future<void> _apply(Duration d) async {
-    final uid = FirebaseAuth.instance.currentUser!.uid;
-    final doc = FirebaseFirestore.instance
-        .doc('users/$uid/reminders/${widget.reminderId}');
     final newDueAt = DateTime.now().add(d);
-
-    await doc.update({
-      'dueAt': Timestamp.fromDate(newDueAt),
-      'updatedAt': FieldValue.serverTimestamp(),
-      'lastSnoozedAt': FieldValue.serverTimestamp(),
-      'lastSnoozedMinutes': d.inMinutes,
-    });
-
+    await AppServices.reminders.snoozeReminder(widget.reminderId, newDueAt);
     if (mounted) Navigator.pop(context);
   }
 
   Future<void> _applyExact() async {
     if (_exact == null) return;
-    final uid = FirebaseAuth.instance.currentUser!.uid;
-    final doc = FirebaseFirestore.instance
-        .doc('users/$uid/reminders/${widget.reminderId}');
-    await doc.update({
-      'dueAt': Timestamp.fromDate(_exact!),
-      'updatedAt': FieldValue.serverTimestamp(),
-      'lastSnoozedAt': FieldValue.serverTimestamp(),
-      'lastSnoozedMinutes': _exact!.difference(DateTime.now()).inMinutes,
-    });
+    await AppServices.reminders.snoozeReminder(widget.reminderId, _exact!);
     if (mounted) Navigator.pop(context);
   }
 
@@ -110,15 +115,17 @@ class _SnoozeScreenState extends State<SnoozeScreen> {
             const SizedBox(height: 18),
             FilledButton.icon(
               onPressed: _pickExact,
-              icon: const Icon(Icons.schedule),
+              icon: const Icon(Icons.event),
               label: Text(
-                _exact == null ? 'Pick exact time' : 'Exact: $_exact',
+                _exact == null
+                    ? 'Pick date & time'
+                    : DateFormat('EEE, MMM d • h:mm a').format(_exact!),
               ),
             ),
             const SizedBox(height: 10),
             FilledButton(
               onPressed: _exact == null ? null : _applyExact,
-              child: const Text('Snooze to exact time'),
+              child: const Text('Snooze to date & time'),
             ),
           ],
         ),
