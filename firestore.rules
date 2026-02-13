@@ -1,0 +1,42 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function participant(uids) {
+      return signedIn() && (request.auth.uid in uids);
+    }
+
+    match /users/{uid} {
+      allow read, write: if isOwner(uid);
+    }
+
+    // Reminder data is scoped strictly per authenticated owner UID.
+    // Premium enforcement is handled in app logic.
+    match /users/{uid}/reminders/{reminderId} {
+      allow read, write: if isOwner(uid);
+    }
+
+    match /users/{uid}/reminderEvents/{eventId} {
+      allow read, write: if isOwner(uid);
+    }
+
+    match /sharedReminders/{sharedReminderId} {
+      allow create: if signedIn()
+        && request.resource.data.ownerUid == request.auth.uid
+        && participant(request.resource.data.participantUids);
+
+      allow read: if signedIn() && participant(resource.data.participantUids);
+
+      // Shared reminder access is restricted to participants only.
+      allow update, delete: if signedIn()
+        && participant(resource.data.participantUids);
+    }
+  }
+}

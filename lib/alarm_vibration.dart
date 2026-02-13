@@ -11,7 +11,7 @@ class AlarmVibration {
     if (_started) return;
     _started = true;
 
-    final hasVibrator = await Vibration.hasVibrator() ?? false;
+    final hasVibrator = await Vibration.hasVibrator();
     if (!hasVibrator) return;
 
     if (Platform.isAndroid) {
@@ -24,7 +24,7 @@ class AlarmVibration {
   static Future<void> stop() async {
     if (!_started) return;
     _started = false;
-    final hasVibrator = await Vibration.hasVibrator() ?? false;
+    final hasVibrator = await Vibration.hasVibrator();
     if (hasVibrator) Vibration.cancel();
   }
 }
