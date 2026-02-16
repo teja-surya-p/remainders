@@ -1,0 +1,4 @@
+{
+  "RC_ANDROID_PUBLIC_KEY": "goog_replace_with_live_public_sdk_key",
+  "RC_IOS_PUBLIC_KEY": "appl_replace_with_live_public_sdk_key"
+}

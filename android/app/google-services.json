@@ -48,6 +48,58 @@
           ]
         }
       }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:44525309522:android:42bed06bbe649e9169198b",
+        "android_client_info": {
+          "package_name": "com.suryatejap24.snooze"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "44525309522-8g5bol2cc14pkia61mou99lqkotp6pc8.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.suryatejap24.snooze",
+            "certificate_hash": "a32e14a96d0996ebf5d534e063c06e91022edeed"
+          }
+        },
+        {
+          "client_id": "44525309522-hj41egpaso6lpk1n5rqm6a43piojs4gm.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.suryatejap24.snooze",
+            "certificate_hash": "cf138f277950ce819aada219e662fb4a72cf00ab"
+          }
+        },
+        {
+          "client_id": "44525309522-2o85349eaq10kfh3q09hmfbf2hriba3p.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBIdq0Hix65EQVRlf6W1dvhvZ0ppP-922Q"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "44525309522-2o85349eaq10kfh3q09hmfbf2hriba3p.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "44525309522-a7ddqhk7dka77sj80n9hp9c1juclshh9.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.snoozeApp"
+              }
+            }
+          ]
+        }
+      }
     }
   ],
   "configuration_version": "1"
