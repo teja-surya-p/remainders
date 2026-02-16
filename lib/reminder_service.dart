@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
 
 import 'reminder_model.dart';
+import 'reminder_sounds.dart';
 import 'reminder_store.dart';
 import 'repeat_utils.dart';
 import 'subscription_service.dart';
@@ -188,6 +189,13 @@ class ReminderService {
     _modePremium = subscription.isPremium;
     _cloudSyncEnabled = subscription.shouldUseCloudSync;
 
+    if (_cloudSyncEnabled) {
+      // Merge local history into cloud on sign-in if premium is already active.
+      await _syncLocalToCloud();
+      // Keep device cache aligned with cloud after upload.
+      await _syncCloudToLocal();
+    }
+
     await _attachActiveStreams();
 
     if (!_listeningSubscription) {
@@ -308,6 +316,8 @@ class ReminderService {
     ReminderRecurrence? recurrence,
     ReminderAlertMode alertMode = ReminderAlertMode.ringAndNotify,
     ReminderPriority priority = ReminderPriority.medium,
+    String? alarmSoundId,
+    String? notificationSoundId,
   }) async {
     _requireSignedIn();
 
@@ -348,6 +358,9 @@ class ReminderService {
       recurrence: normalizedRecurrence,
       alertMode: alertMode,
       priority: priority,
+      alarmSoundId: alarmSoundId ?? ReminderSounds.defaultAlarmSoundId,
+      notificationSoundId:
+          notificationSoundId ?? ReminderSounds.defaultNotificationSoundId,
       createdAt: now,
       updatedAt: now,
       totalOccurrences: 0,

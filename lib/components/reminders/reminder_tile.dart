@@ -34,6 +34,8 @@ class ReminderTile extends StatelessWidget {
             recurrence: reminder.recurrence,
             alertMode: reminder.alertMode,
             priority: reminder.priority,
+            alarmSoundId: reminder.alarmSoundId,
+            notificationSoundId: reminder.notificationSoundId,
           ),
           onSave: (draft) async {
             final updated = reminder.copyWith(
@@ -43,6 +45,8 @@ class ReminderTile extends StatelessWidget {
               recurrence: draft.recurrence,
               alertMode: draft.alertMode,
               priority: draft.priority,
+              alarmSoundId: draft.alarmSoundId,
+              notificationSoundId: draft.notificationSoundId,
               completed: false,
               missed: false,
             );

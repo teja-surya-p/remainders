@@ -50,11 +50,25 @@ class AppTone extends ThemeExtension<AppTone> {
   });
 
   static AppTone of(BuildContext context) {
-    final tone = Theme.of(context).extension<AppTone>();
-    if (tone == null) {
-      throw StateError('AppTone is missing from ThemeData.extensions');
+    final theme = Theme.of(context);
+    final tone = theme.extension<AppTone>();
+    if (tone != null) {
+      return tone;
     }
-    return tone;
+
+    final isDark = theme.brightness == Brightness.dark;
+    return AppTone(
+      success: AppColors.success,
+      warning: AppColors.warning,
+      chart2: AppColors.chart2,
+      chart3: AppColors.chart3,
+      chart4: AppColors.chart4,
+      cardBorder: isDark ? AppColors.darkBorder : AppColors.lightBorder,
+      mutedText: isDark ? AppColors.darkMutedText : AppColors.lightMutedText,
+      glassBackground: isDark
+          ? const Color(0xE61E1814)
+          : const Color(0xE6FFFFFF),
+    );
   }
 
   @override

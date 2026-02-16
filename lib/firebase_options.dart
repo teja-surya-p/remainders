@@ -51,7 +51,7 @@ class DefaultFirebaseOptions {
 
   static const FirebaseOptions android = FirebaseOptions(
     apiKey: 'AIzaSyBIdq0Hix65EQVRlf6W1dvhvZ0ppP-922Q',
-    appId: '1:44525309522:android:f614284d0319cb5869198b',
+    appId: '1:44525309522:android:42bed06bbe649e9169198b',
     messagingSenderId: '44525309522',
     projectId: 'reaminder-app',
     storageBucket: 'reaminder-app.firebasestorage.app',

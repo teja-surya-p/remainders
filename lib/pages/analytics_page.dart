@@ -76,6 +76,8 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
                 subtitle: 'Weekly performance',
                 icon: Icons.task_alt_rounded,
                 color: tone.chart2,
+                help:
+                    'Completion Rate is completed reminders divided by (completed + missed) in the selected time window.',
               ),
               _AnalyticsCardData(
                 type: AnalyticsDetailType.streaks,
@@ -84,6 +86,8 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
                 subtitle: 'Longest: ${insights.bestDayStreak} days',
                 icon: Icons.local_fire_department_rounded,
                 color: cs.primary,
+                help:
+                    'Current Streak counts consecutive days with at least one completed reminder. Longest is your all-time best.',
               ),
               _AnalyticsCardData(
                 type: AnalyticsDetailType.trends,
@@ -92,6 +96,8 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
                 subtitle: '${trend.length} points in range',
                 icon: Icons.trending_up_rounded,
                 color: tone.chart2,
+                help:
+                    'Trend direction compares completion rate from the start and end of this range.',
               ),
               _AnalyticsCardData(
                 type: AnalyticsDetailType.timeOfDay,
@@ -100,6 +106,8 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
                 subtitle: 'Highest completion slot',
                 icon: Icons.schedule_rounded,
                 color: tone.chart3,
+                help:
+                    'Best Time is the day period where you complete the highest percentage of reminders.',
               ),
               _AnalyticsCardData(
                 type: AnalyticsDetailType.missed,
@@ -108,6 +116,8 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
                 subtitle: 'Across at-risk reminders',
                 icon: Icons.warning_amber_rounded,
                 color: cs.error,
+                help:
+                    'Most Missed shows the highest miss count among reminders currently flagged as risky.',
               ),
               _AnalyticsCardData(
                 type: AnalyticsDetailType.risk,
@@ -116,6 +126,8 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
                 subtitle: 'Frequent snooze/miss patterns',
                 icon: Icons.visibility_rounded,
                 color: tone.warning,
+                help:
+                    'Risk reminders are reminders with high miss frequency or repeated snoozing patterns.',
               ),
               _AnalyticsCardData(
                 type: AnalyticsDetailType.consistency,
@@ -124,6 +136,8 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
                 subtitle: 'Top reminders by reliability',
                 icon: Icons.bar_chart_rounded,
                 color: tone.chart3,
+                help:
+                    'Consistency Leaders are reminders with strong completion reliability over time.',
               ),
               _AnalyticsCardData(
                 type: AnalyticsDetailType.focus,
@@ -132,6 +146,8 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
                 subtitle: 'Most productive time window',
                 icon: Icons.bolt_rounded,
                 color: cs.primary,
+                help:
+                    'Focus Windows highlights when your completion performance is strongest during the day.',
               ),
             ];
 
@@ -150,6 +166,41 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
                   style: Theme.of(
                     context,
                   ).textTheme.bodySmall?.copyWith(color: tone.mutedText),
+                ),
+                const SizedBox(height: 4),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(16),
+                    onTap: () => _showMetricHelp(
+                      context,
+                      title: 'How to read analytics',
+                      body:
+                          'Tap any question-mark icon on a metric card to see what that metric means and how it is calculated.',
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 2,
+                        vertical: 2,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.help_outline_rounded,
+                            size: 16,
+                            color: tone.mutedText,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            'How metrics work',
+                            style: Theme.of(context).textTheme.labelSmall
+                                ?.copyWith(color: tone.mutedText),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 ),
                 const SizedBox(height: 10),
                 _RangeSelector(
@@ -225,9 +276,28 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
                                   color: card.color,
                                 ),
                               ),
-                              Icon(
-                                Icons.chevron_right_rounded,
-                                color: tone.mutedText,
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  InkResponse(
+                                    radius: 18,
+                                    onTap: () => _showMetricHelp(
+                                      context,
+                                      title: card.label,
+                                      body: card.help,
+                                    ),
+                                    child: Icon(
+                                      Icons.help_outline_rounded,
+                                      size: 18,
+                                      color: tone.mutedText,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 2),
+                                  Icon(
+                                    Icons.chevron_right_rounded,
+                                    color: tone.mutedText,
+                                  ),
+                                ],
                               ),
                             ],
                           ),
@@ -321,6 +391,26 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
       case _RangeMode.year:
         return '1 year';
     }
+  }
+
+  void _showMetricHelp(
+    BuildContext context, {
+    required String title,
+    required String body,
+  }) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Text(body),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Got it'),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -532,6 +622,7 @@ class _AnalyticsCardData {
   final String subtitle;
   final IconData icon;
   final Color color;
+  final String help;
 
   const _AnalyticsCardData({
     required this.type,
@@ -540,5 +631,6 @@ class _AnalyticsCardData {
     required this.subtitle,
     required this.icon,
     required this.color,
+    required this.help,
   });
 }

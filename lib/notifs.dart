@@ -7,6 +7,8 @@ import 'package:flutter_native_timezone_updated_gradle/flutter_native_timezone.d
 import 'package:timezone/data/latest_all.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
 
+import 'reminder_sounds.dart';
+
 enum AlarmPriorityLevel { low, medium, high }
 
 class Notifs {
@@ -16,14 +18,14 @@ class Notifs {
       FlutterLocalNotificationsPlugin();
   static bool _canScheduleExact = true;
   static bool _notificationsEnabled = true;
+  static final Set<String> _createdChannelIds = <String>{};
 
-  static const String channelId = 'reminders_alarm_medium_v2';
-  static const String channelName = 'Reminders (Medium)';
   static const String categoryId = 'REMINDER_CATEGORY';
-  static const String _alarmLowChannelId = 'reminders_alarm_low_v2';
-  static const String _alarmMediumChannelId = 'reminders_alarm_medium_v2';
-  static const String _alarmHighChannelId = 'reminders_alarm_high_v2';
-  static const String _silentChannelId = 'reminders_silent_v2';
+  static const String _alarmLowChannelBase = 'reminders_alarm_low_v3';
+  static const String _alarmMediumChannelBase = 'reminders_alarm_medium_v3';
+  static const String _alarmHighChannelBase = 'reminders_alarm_high_v3';
+  static const String _notifyChannelBase = 'reminders_notify_v3';
+  static const String _silentChannelId = 'reminders_silent_v3';
 
   static const String aSnooze5 = 'SNOOZE_5';
   static const String aSnooze10 = 'SNOOZE_10';
@@ -34,83 +36,14 @@ class Notifs {
   static final GlobalKey<NavigatorState> navKey = GlobalKey<NavigatorState>();
   static NotificationResponse? _pendingLaunchResponse;
 
-  static const AndroidNotificationChannel _silentChannel =
-      AndroidNotificationChannel(
-        _silentChannelId,
-        'Reminders (Silent)',
-        description: 'Silent reminder notifications',
-        importance: Importance.high,
-        playSound: false,
-        enableVibration: false,
-      );
-
-  static const AndroidNotificationChannel _alarmLowChannel =
-      AndroidNotificationChannel(
-        _alarmLowChannelId,
-        'Reminders (Low Priority)',
-        description: 'Low priority reminder alarms',
-        importance: Importance.defaultImportance,
-        playSound: true,
-        enableVibration: true,
-        audioAttributesUsage: AudioAttributesUsage.alarm,
-      );
-
-  static const AndroidNotificationChannel _alarmMediumChannel =
-      AndroidNotificationChannel(
-        _alarmMediumChannelId,
-        'Reminders (Medium Priority)',
-        description: 'Medium priority reminder alarms',
-        importance: Importance.high,
-        playSound: true,
-        enableVibration: true,
-        audioAttributesUsage: AudioAttributesUsage.alarm,
-      );
-
-  static const AndroidNotificationChannel _alarmHighChannel =
-      AndroidNotificationChannel(
-        _alarmHighChannelId,
-        'Reminders (High Priority)',
-        description: 'High priority reminder alarms',
-        importance: Importance.max,
-        playSound: true,
-        enableVibration: true,
-        audioAttributesUsage: AudioAttributesUsage.alarm,
-      );
-
-  static const _ChannelConfig _alarmLowConfig = _ChannelConfig(
-    id: _alarmLowChannelId,
-    name: 'Reminders (Low Priority)',
-    description: 'Low priority reminder alarms',
-    importance: Importance.defaultImportance,
-    priority: Priority.defaultPriority,
-    audioUsage: AudioAttributesUsage.alarm,
-  );
-
-  static const _ChannelConfig _alarmMediumConfig = _ChannelConfig(
-    id: _alarmMediumChannelId,
-    name: 'Reminders (Medium Priority)',
-    description: 'Medium priority reminder alarms',
-    importance: Importance.high,
-    priority: Priority.high,
-    audioUsage: AudioAttributesUsage.alarm,
-  );
-
-  static const _ChannelConfig _alarmHighConfig = _ChannelConfig(
-    id: _alarmHighChannelId,
-    name: 'Reminders (High Priority)',
-    description: 'High priority reminder alarms',
-    importance: Importance.max,
-    priority: Priority.max,
-    audioUsage: AudioAttributesUsage.alarm,
-  );
-
-  static const _ChannelConfig _silentConfig = _ChannelConfig(
+  static final _ChannelConfig _silentConfig = _ChannelConfig(
     id: _silentChannelId,
     name: 'Reminders (Silent)',
     description: 'Silent reminder notifications',
     importance: Importance.high,
     priority: Priority.high,
     audioUsage: AudioAttributesUsage.notification,
+    enableVibration: false,
   );
 
   static Future<void> init({
@@ -214,15 +147,19 @@ class Notifs {
     String? payload,
     bool isAlarm = false,
     bool playSound = true,
+    String? alarmSoundId,
+    String? notificationSoundId,
     bool enableVibration = true,
     bool enableActions = true,
     AlarmPriorityLevel priorityLevel = AlarmPriorityLevel.medium,
   }) async {
+    AndroidFlutterLocalNotificationsPlugin? androidPlatform;
     if (Platform.isAndroid) {
       final android = _p
           .resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin
           >();
+      androidPlatform = android;
       await _refreshAndroidPermissionState(android, request: false);
       if ((!_notificationsEnabled || (isAlarm && !_canScheduleExact)) &&
           android != null) {
@@ -245,7 +182,12 @@ class Notifs {
       isAlarm: isAlarm,
       playSound: playSound,
       priorityLevel: priorityLevel,
+      alarmSoundId: alarmSoundId,
+      notificationSoundId: notificationSoundId,
     );
+    if (Platform.isAndroid) {
+      await _ensureAndroidChannel(androidPlatform, channel);
+    }
 
     final android = AndroidNotificationDetails(
       channel.id,
@@ -254,6 +196,9 @@ class Notifs {
       importance: channel.importance,
       priority: channel.priority,
       playSound: playSound,
+      sound: playSound && channel.soundResource != null
+          ? RawResourceAndroidNotificationSound(channel.soundResource!)
+          : null,
       enableVibration: enableVibration,
       vibrationPattern: enableVibration
           ? Int64List.fromList([0, 1000, 500, 1000])
@@ -332,18 +277,72 @@ class Notifs {
     required bool isAlarm,
     required bool playSound,
     required AlarmPriorityLevel priorityLevel,
+    String? alarmSoundId,
+    String? notificationSoundId,
   }) {
-    if (!isAlarm || !playSound) {
+    if (!playSound) {
       return _silentConfig;
     }
-    switch (priorityLevel) {
-      case AlarmPriorityLevel.low:
-        return _alarmLowConfig;
-      case AlarmPriorityLevel.medium:
-        return _alarmMediumConfig;
-      case AlarmPriorityLevel.high:
-        return _alarmHighConfig;
+    if (!isAlarm) {
+      final sound = ReminderSounds.notificationById(notificationSoundId);
+      return _ChannelConfig(
+        id: '${_notifyChannelBase}_${sound.androidRawResource}',
+        name: 'Reminders (${sound.label})',
+        description: 'Reminder notifications with selected sound',
+        importance: Importance.high,
+        priority: Priority.high,
+        audioUsage: AudioAttributesUsage.notification,
+        soundResource: sound.androidRawResource,
+      );
     }
+
+    final sound = ReminderSounds.alarmById(alarmSoundId);
+    final channelBase = switch (priorityLevel) {
+      AlarmPriorityLevel.low => _alarmLowChannelBase,
+      AlarmPriorityLevel.medium => _alarmMediumChannelBase,
+      AlarmPriorityLevel.high => _alarmHighChannelBase,
+    };
+    final (importance, priority) = switch (priorityLevel) {
+      AlarmPriorityLevel.low => (
+        Importance.defaultImportance,
+        Priority.defaultPriority,
+      ),
+      AlarmPriorityLevel.medium => (Importance.high, Priority.high),
+      AlarmPriorityLevel.high => (Importance.max, Priority.max),
+    };
+
+    return _ChannelConfig(
+      id: '${channelBase}_${sound.androidRawResource}',
+      name: 'Reminders (${_priorityLabel(priorityLevel)} • ${sound.label})',
+      description: 'Reminder alarms with selected sound',
+      importance: importance,
+      priority: priority,
+      audioUsage: AudioAttributesUsage.alarm,
+      soundResource: sound.androidRawResource,
+    );
+  }
+
+  static String _priorityLabel(AlarmPriorityLevel level) {
+    switch (level) {
+      case AlarmPriorityLevel.low:
+        return 'Low';
+      case AlarmPriorityLevel.medium:
+        return 'Medium';
+      case AlarmPriorityLevel.high:
+        return 'High';
+    }
+  }
+
+  static Future<void> _ensureAndroidChannel(
+    AndroidFlutterLocalNotificationsPlugin? android,
+    _ChannelConfig channel,
+  ) async {
+    if (android == null) return;
+    if (_createdChannelIds.contains(channel.id)) return;
+    try {
+      await android.createNotificationChannel(channel.toAndroidChannel());
+      _createdChannelIds.add(channel.id);
+    } catch (_) {}
   }
 
   static Future<void> _zonedSchedule({
@@ -401,18 +400,43 @@ class Notifs {
     AndroidFlutterLocalNotificationsPlugin? android,
   ) async {
     if (android == null) return;
-    try {
-      await android.createNotificationChannel(_silentChannel);
-    } catch (_) {}
-    try {
-      await android.createNotificationChannel(_alarmLowChannel);
-    } catch (_) {}
-    try {
-      await android.createNotificationChannel(_alarmMediumChannel);
-    } catch (_) {}
-    try {
-      await android.createNotificationChannel(_alarmHighChannel);
-    } catch (_) {}
+    await _ensureAndroidChannel(android, _silentConfig);
+    await _ensureAndroidChannel(
+      android,
+      _resolveChannelConfig(
+        isAlarm: true,
+        playSound: true,
+        priorityLevel: AlarmPriorityLevel.low,
+        alarmSoundId: ReminderSounds.defaultAlarmSoundId,
+      ),
+    );
+    await _ensureAndroidChannel(
+      android,
+      _resolveChannelConfig(
+        isAlarm: true,
+        playSound: true,
+        priorityLevel: AlarmPriorityLevel.medium,
+        alarmSoundId: ReminderSounds.defaultAlarmSoundId,
+      ),
+    );
+    await _ensureAndroidChannel(
+      android,
+      _resolveChannelConfig(
+        isAlarm: true,
+        playSound: true,
+        priorityLevel: AlarmPriorityLevel.high,
+        alarmSoundId: ReminderSounds.defaultAlarmSoundId,
+      ),
+    );
+    await _ensureAndroidChannel(
+      android,
+      _resolveChannelConfig(
+        isAlarm: false,
+        playSound: true,
+        priorityLevel: AlarmPriorityLevel.medium,
+        notificationSoundId: ReminderSounds.defaultNotificationSoundId,
+      ),
+    );
   }
 }
 
@@ -423,13 +447,32 @@ class _ChannelConfig {
   final Importance importance;
   final Priority priority;
   final AudioAttributesUsage audioUsage;
+  final String? soundResource;
+  final bool enableVibration;
 
-  const _ChannelConfig({
+  _ChannelConfig({
     required this.id,
     required this.name,
     required this.description,
     required this.importance,
     required this.priority,
     required this.audioUsage,
+    this.soundResource,
+    this.enableVibration = true,
   });
+
+  AndroidNotificationChannel toAndroidChannel() {
+    return AndroidNotificationChannel(
+      id,
+      name,
+      description: description,
+      importance: importance,
+      playSound: soundResource != null,
+      sound: soundResource == null
+          ? null
+          : RawResourceAndroidNotificationSound(soundResource!),
+      enableVibration: enableVibration,
+      audioAttributesUsage: audioUsage,
+    );
+  }
 }

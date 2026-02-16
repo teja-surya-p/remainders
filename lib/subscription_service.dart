@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:purchases_flutter/purchases_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -12,6 +13,12 @@ class SubscriptionState {
   final DateTime? lastValidatedAt;
   final String source;
   final String? error;
+  final String? activeProductIdentifier;
+  final DateTime? entitlementExpirationDate;
+  final bool? entitlementWillRenew;
+  final DateTime? latestPurchaseDate;
+  final DateTime? unsubscribeDetectedAt;
+  final DateTime? billingIssueDetectedAt;
 
   const SubscriptionState({
     required this.loading,
@@ -20,6 +27,12 @@ class SubscriptionState {
     required this.source,
     this.lastValidatedAt,
     this.error,
+    this.activeProductIdentifier,
+    this.entitlementExpirationDate,
+    this.entitlementWillRenew,
+    this.latestPurchaseDate,
+    this.unsubscribeDetectedAt,
+    this.billingIssueDetectedAt,
   });
 
   factory SubscriptionState.initial() {
@@ -37,6 +50,13 @@ class SubscriptionState {
     bool? needsRefresh,
     DateTime? lastValidatedAt,
     bool clearLastValidatedAt = false,
+    String? activeProductIdentifier,
+    DateTime? entitlementExpirationDate,
+    bool? entitlementWillRenew,
+    DateTime? latestPurchaseDate,
+    DateTime? unsubscribeDetectedAt,
+    DateTime? billingIssueDetectedAt,
+    bool clearEntitlementDetails = false,
     String? source,
     String? error,
     bool clearError = false,
@@ -48,11 +68,31 @@ class SubscriptionState {
       lastValidatedAt: clearLastValidatedAt
           ? null
           : (lastValidatedAt ?? this.lastValidatedAt),
+      activeProductIdentifier: clearEntitlementDetails
+          ? null
+          : (activeProductIdentifier ?? this.activeProductIdentifier),
+      entitlementExpirationDate: clearEntitlementDetails
+          ? null
+          : (entitlementExpirationDate ?? this.entitlementExpirationDate),
+      entitlementWillRenew: clearEntitlementDetails
+          ? null
+          : (entitlementWillRenew ?? this.entitlementWillRenew),
+      latestPurchaseDate: clearEntitlementDetails
+          ? null
+          : (latestPurchaseDate ?? this.latestPurchaseDate),
+      unsubscribeDetectedAt: clearEntitlementDetails
+          ? null
+          : (unsubscribeDetectedAt ?? this.unsubscribeDetectedAt),
+      billingIssueDetectedAt: clearEntitlementDetails
+          ? null
+          : (billingIssueDetectedAt ?? this.billingIssueDetectedAt),
       source: source ?? this.source,
       error: clearError ? null : (error ?? this.error),
     );
   }
 }
+
+enum PurchaseActionResult { success, cancelled, noEntitlement }
 
 class SubscriptionService extends ChangeNotifier {
   SubscriptionService();
@@ -65,11 +105,15 @@ class SubscriptionService extends ChangeNotifier {
   );
   static const bool _assumeProWithoutRc = bool.fromEnvironment(
     'ASSUME_PRO_WITHOUT_RC',
-    defaultValue: true,
+    defaultValue: false,
+  );
+  static const String _sharedPublicKey = String.fromEnvironment(
+    'RC_PUBLIC_KEY',
+    defaultValue: '',
   );
   static const String _androidPublicKey = String.fromEnvironment(
     'RC_ANDROID_PUBLIC_KEY',
-    defaultValue: '',
+    defaultValue: 'goog_nhAxrUCnywYPuRLYTnzyIpoCtxX',
   );
   static const String _iosPublicKey = String.fromEnvironment(
     'RC_IOS_PUBLIC_KEY',
@@ -97,10 +141,16 @@ class SubscriptionService extends ChangeNotifier {
       _assumeProWithoutRc && kDebugMode && !_canUseRevenueCat;
 
   String get _publicKey {
-    if (Platform.isAndroid) return _androidPublicKey;
-    if (Platform.isIOS) return _iosPublicKey;
-    if (Platform.isMacOS) return _iosPublicKey;
-    return '';
+    final shared = _sharedPublicKey.trim();
+    if (Platform.isAndroid) {
+      final key = _androidPublicKey.trim();
+      return key.isNotEmpty ? key : shared;
+    }
+    if (Platform.isIOS || Platform.isMacOS) {
+      final key = _iosPublicKey.trim();
+      return key.isNotEmpty ? key : shared;
+    }
+    return shared;
   }
 
   bool get _canUseRevenueCat => _publicKey.trim().isNotEmpty;
@@ -114,6 +164,7 @@ class SubscriptionService extends ChangeNotifier {
           loading: false,
           isPremium: true,
           needsRefresh: false,
+          clearEntitlementDetails: true,
           source: 'dev_override',
           clearError: true,
         ),
@@ -127,6 +178,7 @@ class SubscriptionService extends ChangeNotifier {
           loading: false,
           isPremium: true,
           needsRefresh: false,
+          clearEntitlementDetails: true,
           source: 'assumed_pro_no_revenuecat',
           clearError: true,
         ),
@@ -152,6 +204,7 @@ class SubscriptionService extends ChangeNotifier {
           loading: false,
           isPremium: false,
           needsRefresh: true,
+          clearEntitlementDetails: true,
           source: _canUseRevenueCat ? 'awaiting_user' : 'missing_keys',
           clearError: true,
         ),
@@ -168,6 +221,7 @@ class SubscriptionService extends ChangeNotifier {
           loading: false,
           isPremium: true,
           needsRefresh: false,
+          clearEntitlementDetails: true,
           source: 'dev_override',
           clearError: true,
         ),
@@ -181,6 +235,7 @@ class SubscriptionService extends ChangeNotifier {
           loading: false,
           isPremium: true,
           needsRefresh: false,
+          clearEntitlementDetails: true,
           source: 'assumed_pro_no_revenuecat',
           clearError: true,
         ),
@@ -195,6 +250,7 @@ class SubscriptionService extends ChangeNotifier {
           isPremium: false,
           needsRefresh: true,
           clearLastValidatedAt: true,
+          clearEntitlementDetails: true,
           source: 'missing_keys',
           clearError: true,
         ),
@@ -233,6 +289,7 @@ class SubscriptionService extends ChangeNotifier {
           isPremium: cached?.isPremium ?? false,
           needsRefresh: cached?.needsRefresh ?? true,
           lastValidatedAt: cached?.lastValidatedAt,
+          clearEntitlementDetails: true,
           source: 'revenuecat_init_failed',
           error: e.toString(),
         ),
@@ -261,6 +318,7 @@ class SubscriptionService extends ChangeNotifier {
         isPremium: cached?.isPremium ?? false,
         needsRefresh: cached?.needsRefresh ?? true,
         lastValidatedAt: cached?.lastValidatedAt,
+        clearEntitlementDetails: true,
         source: 'signed_out',
         clearError: true,
       ),
@@ -274,6 +332,7 @@ class SubscriptionService extends ChangeNotifier {
           loading: false,
           isPremium: true,
           needsRefresh: false,
+          clearEntitlementDetails: true,
           source: 'dev_override',
           clearError: true,
         ),
@@ -287,6 +346,7 @@ class SubscriptionService extends ChangeNotifier {
           loading: false,
           isPremium: true,
           needsRefresh: false,
+          clearEntitlementDetails: true,
           source: 'assumed_pro_no_revenuecat',
           clearError: true,
         ),
@@ -300,6 +360,7 @@ class SubscriptionService extends ChangeNotifier {
           loading: false,
           isPremium: false,
           needsRefresh: true,
+          clearEntitlementDetails: true,
           source: 'no_user',
         ),
       );
@@ -313,6 +374,7 @@ class SubscriptionService extends ChangeNotifier {
           isPremium: false,
           needsRefresh: true,
           clearLastValidatedAt: true,
+          clearEntitlementDetails: true,
           source: 'missing_keys',
           clearError: true,
         ),
@@ -330,21 +392,7 @@ class SubscriptionService extends ChangeNotifier {
 
     try {
       final info = await Purchases.getCustomerInfo();
-      final entitlement = info.entitlements.active[entitlementName];
-      final active = entitlement != null && entitlement.isActive;
-      final now = DateTime.now();
-      await _writeCache(active, now);
-
-      _setState(
-        state.value.copyWith(
-          loading: false,
-          isPremium: active,
-          needsRefresh: false,
-          lastValidatedAt: now,
-          source: 'revenuecat',
-          clearError: true,
-        ),
-      );
+      await _applyCustomerInfo(info, source: 'revenuecat');
     } catch (e) {
       final cached = _readCached();
       if (cached != null) {
@@ -354,6 +402,7 @@ class SubscriptionService extends ChangeNotifier {
             isPremium: cached.isPremium,
             needsRefresh: cached.needsRefresh,
             lastValidatedAt: cached.lastValidatedAt,
+            clearEntitlementDetails: true,
             source: 'cache_after_error',
             error: e.toString(),
           ),
@@ -364,6 +413,7 @@ class SubscriptionService extends ChangeNotifier {
             loading: false,
             isPremium: false,
             needsRefresh: true,
+            clearEntitlementDetails: true,
             source: 'refresh_failed',
             error: e.toString(),
           ),
@@ -374,36 +424,72 @@ class SubscriptionService extends ChangeNotifier {
 
   Future<Offerings?> fetchOfferings() async {
     if (_isDevOverride || _isAssumedProFallback) return null;
-    if (!_canUseRevenueCat || !_configured || _user == null) return null;
+    if (!_canUseRevenueCat || _user == null) return null;
+    await _ensureConfiguredForCurrentUser();
 
     final offerings = await Purchases.getOfferings();
     return offerings;
   }
 
-  Future<void> purchasePackage(Package package) async {
+  Future<PurchaseActionResult> purchasePackage(Package package) async {
     if (_user == null) {
       throw StateError('Authentication required before purchase.');
     }
-    if (_isDevOverride || _isAssumedProFallback) return;
+    if (_isDevOverride || _isAssumedProFallback) {
+      return PurchaseActionResult.success;
+    }
     if (!_canUseRevenueCat) {
       throw StateError('RevenueCat public key missing.');
     }
 
-    await Purchases.purchase(PurchaseParams.package(package));
-    await refreshEntitlement();
+    await _ensureConfiguredForCurrentUser();
+
+    try {
+      final result = await Purchases.purchase(PurchaseParams.package(package));
+      await _applyCustomerInfo(result.customerInfo, source: 'purchase');
+      if (state.value.isPremium) {
+        return PurchaseActionResult.success;
+      }
+      await refreshEntitlement();
+      return state.value.isPremium
+          ? PurchaseActionResult.success
+          : PurchaseActionResult.noEntitlement;
+    } on PlatformException catch (e) {
+      final code = _safeErrorCode(e);
+      if (code == PurchasesErrorCode.purchaseCancelledError) {
+        return PurchaseActionResult.cancelled;
+      }
+      throw StateError(_friendlyPurchaseError(e, code));
+    }
   }
 
-  Future<void> restorePurchases() async {
+  Future<PurchaseActionResult> restorePurchases() async {
     if (_user == null) {
       throw StateError('Authentication required before restore.');
     }
-    if (_isDevOverride || _isAssumedProFallback) return;
+    if (_isDevOverride || _isAssumedProFallback) {
+      return PurchaseActionResult.success;
+    }
     if (!_canUseRevenueCat) {
       throw StateError('RevenueCat public key missing.');
     }
 
-    await Purchases.restorePurchases();
-    await refreshEntitlement();
+    await _ensureConfiguredForCurrentUser();
+
+    try {
+      final info = await Purchases.restorePurchases();
+      await _applyCustomerInfo(info, source: 'restore');
+      if (state.value.isPremium) {
+        return PurchaseActionResult.success;
+      }
+      await refreshEntitlement();
+      return state.value.isPremium
+          ? PurchaseActionResult.success
+          : PurchaseActionResult.noEntitlement;
+    } on PlatformException catch (e) {
+      final code = _safeErrorCode(e);
+      throw StateError(_friendlyRestoreError(e, code));
+    }
   }
 
   void _setState(SubscriptionState value) {
@@ -455,8 +541,39 @@ class SubscriptionService extends ChangeNotifier {
   }
 
   Future<void> _onCustomerInfoUpdated(CustomerInfo info) async {
+    await _applyCustomerInfo(info, source: 'customer_info_listener');
+  }
+
+  Future<void> _ensureConfiguredForCurrentUser() async {
+    final user = _user;
+    if (user == null) {
+      throw StateError('Authentication required before purchase.');
+    }
+    if (_configured) return;
+
+    await bindAuthenticatedUser(user);
+    if (!_configured) {
+      throw StateError('RevenueCat is not configured yet. Please try again.');
+    }
+  }
+
+  Future<void> _applyCustomerInfo(
+    CustomerInfo info, {
+    required String source,
+  }) async {
     final entitlement = info.entitlements.active[entitlementName];
     final active = entitlement != null && entitlement.isActive;
+    final activeProductIdentifier = entitlement?.productIdentifier;
+    final entitlementExpirationDate = _parseIsoDate(
+      entitlement?.expirationDate,
+    );
+    final latestPurchaseDate = _parseIsoDate(entitlement?.latestPurchaseDate);
+    final unsubscribeDetectedAt = _parseIsoDate(
+      entitlement?.unsubscribeDetectedAt,
+    );
+    final billingIssueDetectedAt = _parseIsoDate(
+      entitlement?.billingIssueDetectedAt,
+    );
     final now = DateTime.now();
     await _writeCache(active, now);
     _setState(
@@ -465,10 +582,66 @@ class SubscriptionService extends ChangeNotifier {
         isPremium: active,
         needsRefresh: false,
         lastValidatedAt: now,
-        source: 'customer_info_listener',
+        activeProductIdentifier: activeProductIdentifier,
+        entitlementExpirationDate: entitlementExpirationDate,
+        entitlementWillRenew: entitlement?.willRenew,
+        latestPurchaseDate: latestPurchaseDate,
+        unsubscribeDetectedAt: unsubscribeDetectedAt,
+        billingIssueDetectedAt: billingIssueDetectedAt,
+        clearEntitlementDetails: !active,
+        source: source,
         clearError: true,
       ),
     );
+  }
+
+  DateTime? _parseIsoDate(String? value) {
+    if (value == null || value.isEmpty) return null;
+    final parsed = DateTime.tryParse(value);
+    return parsed?.toLocal();
+  }
+
+  PurchasesErrorCode _safeErrorCode(PlatformException e) {
+    try {
+      return PurchasesErrorHelper.getErrorCode(e);
+    } catch (_) {
+      return PurchasesErrorCode.unknownError;
+    }
+  }
+
+  String _friendlyPurchaseError(PlatformException e, PurchasesErrorCode code) {
+    switch (code) {
+      case PurchasesErrorCode.storeProblemError:
+      case PurchasesErrorCode.productNotAvailableForPurchaseError:
+      case PurchasesErrorCode.configurationError:
+        return 'Purchase failed due to store configuration. Check RevenueCat products and offering mapping.';
+      case PurchasesErrorCode.networkError:
+      case PurchasesErrorCode.offlineConnectionError:
+        return 'Purchase failed due to network connectivity. Try again online.';
+      case PurchasesErrorCode.purchaseNotAllowedError:
+      case PurchasesErrorCode.insufficientPermissionsError:
+        return 'Purchases are not allowed on this device/account.';
+      default:
+        final message = (e.message ?? '').trim();
+        if (message.isNotEmpty) {
+          return 'Purchase failed: $message';
+        }
+        return 'Purchase failed. Please try again.';
+    }
+  }
+
+  String _friendlyRestoreError(PlatformException e, PurchasesErrorCode code) {
+    switch (code) {
+      case PurchasesErrorCode.networkError:
+      case PurchasesErrorCode.offlineConnectionError:
+        return 'Restore failed due to network connectivity. Try again online.';
+      default:
+        final message = (e.message ?? '').trim();
+        if (message.isNotEmpty) {
+          return 'Restore failed: $message';
+        }
+        return 'Restore failed. Please try again.';
+    }
   }
 }
 

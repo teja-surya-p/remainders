@@ -107,6 +107,8 @@ class ReminderScheduler {
       reminder.description ?? '',
       reminderAlertModeToString(reminder.alertMode),
       reminderPriorityToString(reminder.priority),
+      reminder.alarmSoundId,
+      reminder.notificationSoundId,
       shouldPre,
     ].join('|');
 
@@ -181,8 +183,9 @@ class ReminderScheduler {
         body: _upcomingBody(reminder),
         whenLocal: preTime,
         payload: 'pre:${reminder.id}',
-        playSound: false,
-        enableVibration: false,
+        playSound: true,
+        notificationSoundId: reminder.notificationSoundId,
+        enableVibration: true,
         enableActions: false,
       );
     }
@@ -211,8 +214,9 @@ class ReminderScheduler {
           body: body,
           whenLocal: whenLocal,
           payload: 'notify:${reminder.id}',
-          playSound: false,
-          enableVibration: false,
+          playSound: true,
+          notificationSoundId: reminder.notificationSoundId,
+          enableVibration: true,
           enableActions: false,
           priorityLevel: level,
         );
@@ -225,6 +229,7 @@ class ReminderScheduler {
           whenLocal: whenLocal,
           payload: 'alarm:${reminder.id}',
           isAlarm: true,
+          alarmSoundId: reminder.alarmSoundId,
           enableActions: false,
           priorityLevel: level,
         );
@@ -237,6 +242,7 @@ class ReminderScheduler {
           whenLocal: whenLocal,
           payload: 'alarm:${reminder.id}',
           isAlarm: true,
+          alarmSoundId: reminder.alarmSoundId,
           priorityLevel: level,
         );
         return;

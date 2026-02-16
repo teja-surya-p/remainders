@@ -19,6 +19,10 @@ class SignInPage extends StatefulWidget {
 }
 
 class _SignInPageState extends State<SignInPage> {
+  static final RegExp _emailPattern = RegExp(
+    r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$',
+  );
+
   final _email = TextEditingController();
   final _password = TextEditingController();
 
@@ -27,6 +31,8 @@ class _SignInPageState extends State<SignInPage> {
   bool _loading = false;
   String? _error;
   String? _lastEmail;
+  String? _emailFieldError;
+  String? _passwordFieldError;
 
   @override
   void dispose() {
@@ -54,15 +60,24 @@ class _SignInPageState extends State<SignInPage> {
 
   Future<void> _handleEmail() async {
     final email = _email.text.trim();
-    final password = _password.text.trim();
-    if (email.isEmpty || password.isEmpty) {
-      setState(() => _error = 'Email and password required.');
+    final password = _password.text;
+
+    final emailError = _validateEmail(email);
+    final passwordError = _validatePassword(password);
+    if (emailError != null || passwordError != null) {
+      setState(() {
+        _emailFieldError = emailError;
+        _passwordFieldError = passwordError;
+        _error = emailError ?? passwordError;
+      });
       return;
     }
 
     setState(() {
       _loading = true;
       _error = null;
+      _emailFieldError = null;
+      _passwordFieldError = null;
     });
 
     try {
@@ -85,8 +100,9 @@ class _SignInPageState extends State<SignInPage> {
     } catch (e) {
       setState(() => _error = 'Auth failed: $e');
     } finally {
-      if (!mounted) return;
-      setState(() => _loading = false);
+      if (mounted) {
+        setState(() => _loading = false);
+      }
     }
   }
 
@@ -125,8 +141,44 @@ class _SignInPageState extends State<SignInPage> {
     } catch (e) {
       setState(() => _error = 'Google sign-in failed: $e');
     } finally {
+      if (mounted) {
+        setState(() => _loading = false);
+      }
+    }
+  }
+
+  Future<void> _handleForgotPassword() async {
+    final email = _email.text.trim();
+    final emailError = _validateEmail(email);
+    if (emailError != null) {
+      setState(() {
+        _emailFieldError = emailError;
+        _error = 'Enter a valid email first, then tap Forgot password.';
+      });
+      return;
+    }
+
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+
+    try {
+      await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
       if (!mounted) return;
-      setState(() => _loading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Password reset email sent to $email')),
+      );
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
+      setState(() => _error = e.message ?? 'Unable to send reset email.');
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = 'Unable to send reset email: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _loading = false);
+      }
     }
   }
 
@@ -142,6 +194,30 @@ class _SignInPageState extends State<SignInPage> {
           'download updated google-services.json, then rebuild.';
     }
     return 'Google sign-in failed: ${e.message ?? e.code}';
+  }
+
+  String? _validateEmail(String email) {
+    final value = email.trim();
+    if (value.isEmpty) {
+      return 'Email is required.';
+    }
+    if (value.contains(' ')) {
+      return 'Email cannot contain spaces.';
+    }
+    if (!_emailPattern.hasMatch(value)) {
+      return 'Enter a valid email address.';
+    }
+    return null;
+  }
+
+  String? _validatePassword(String password) {
+    if (password.isEmpty) {
+      return 'Password is required.';
+    }
+    if (password.length < 8) {
+      return 'Password must be at least 8 characters.';
+    }
+    return null;
   }
 
   Future<void> _mergeAnonymousData(User? oldUser, User? newUser) async {
@@ -288,9 +364,22 @@ class _SignInPageState extends State<SignInPage> {
                             controller: _email,
                             enabled: !_loading,
                             keyboardType: TextInputType.emailAddress,
+                            autofillHints: const [AutofillHints.username],
+                            textInputAction: TextInputAction.next,
+                            onChanged: (value) {
+                              if (_emailFieldError != null) {
+                                setState(
+                                  () =>
+                                      _emailFieldError = _validateEmail(value),
+                                );
+                              }
+                            },
                             decoration: InputDecoration(
                               labelText: 'Email',
                               hintText: _lastEmail ?? 'you@example.com',
+                              helperText:
+                                  'Use a valid email like name@example.com',
+                              errorText: _emailFieldError,
                             ),
                           ),
                           const SizedBox(height: 10),
@@ -298,8 +387,26 @@ class _SignInPageState extends State<SignInPage> {
                             controller: _password,
                             enabled: !_loading,
                             obscureText: !_showPassword,
+                            autofillHints: const [AutofillHints.password],
+                            textInputAction: TextInputAction.done,
+                            onSubmitted: (_) {
+                              if (!_loading) {
+                                _handleEmail();
+                              }
+                            },
+                            onChanged: (value) {
+                              if (_passwordFieldError != null) {
+                                setState(
+                                  () => _passwordFieldError = _validatePassword(
+                                    value,
+                                  ),
+                                );
+                              }
+                            },
                             decoration: InputDecoration(
                               labelText: 'Password',
+                              helperText: 'Minimum 8 characters',
+                              errorText: _passwordFieldError,
                               suffixIcon: IconButton(
                                 icon: Icon(
                                   _showPassword
@@ -312,6 +419,18 @@ class _SignInPageState extends State<SignInPage> {
                               ),
                             ),
                           ),
+                          if (_isLogin) ...[
+                            const SizedBox(height: 4),
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: TextButton(
+                                onPressed: _loading
+                                    ? null
+                                    : _handleForgotPassword,
+                                child: const Text('Forgot password?'),
+                              ),
+                            ),
+                          ],
                           const SizedBox(height: 14),
                           FilledButton(
                             onPressed: _loading ? null : _handleEmail,
@@ -341,7 +460,12 @@ class _SignInPageState extends State<SignInPage> {
                           TextButton(
                             onPressed: _loading
                                 ? null
-                                : () => setState(() => _isLogin = !_isLogin),
+                                : () => setState(() {
+                                    _isLogin = !_isLogin;
+                                    _error = null;
+                                    _emailFieldError = null;
+                                    _passwordFieldError = null;
+                                  }),
                             child: Text(
                               _isLogin
                                   ? 'Need an account? Sign up'

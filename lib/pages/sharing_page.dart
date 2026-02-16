@@ -10,6 +10,8 @@ import '../reminder_service.dart';
 import '../shared_reminder_service.dart';
 import '../theme/app_tokens.dart';
 
+enum _SharingTab { shareLink, joinLink, reminders }
+
 class SharingPage extends StatefulWidget {
   final VoidCallback onOpenSubscription;
 
@@ -24,7 +26,7 @@ class _SharingPageState extends State<SharingPage> {
   final TextEditingController _inviteCode = TextEditingController();
   bool _busy = false;
   String? _createdInviteLink;
-  bool _shareTab = true;
+  _SharingTab _activeTab = _SharingTab.shareLink;
 
   @override
   void dispose() {
@@ -41,11 +43,11 @@ class _SharingPageState extends State<SharingPage> {
     });
 
     try {
-      final code = await SharedReminderService.createSharedReminder(
+      final link = await SharedReminderService.createSharedReminder(
         _selectedReminderId!,
       );
       if (!mounted) return;
-      setState(() => _createdInviteLink = code);
+      setState(() => _createdInviteLink = link);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -55,8 +57,9 @@ class _SharingPageState extends State<SharingPage> {
         widget.onOpenSubscription();
       }
     } finally {
-      if (!mounted) return;
-      setState(() => _busy = false);
+      if (mounted) {
+        setState(() => _busy = false);
+      }
     }
   }
 
@@ -78,9 +81,99 @@ class _SharingPageState extends State<SharingPage> {
         widget.onOpenSubscription();
       }
     } finally {
-      if (!mounted) return;
-      setState(() => _busy = false);
+      if (mounted) {
+        setState(() => _busy = false);
+      }
     }
+  }
+
+  Future<void> _copyToClipboard(String value, String message) async {
+    await Clipboard.setData(ClipboardData(text: value));
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _showSharedReminderMembers(SharedReminder reminder) async {
+    final currentUid = FirebaseAuth.instance.currentUser?.uid;
+    final participants = <String>{
+      reminder.ownerUid,
+      ...reminder.participantUids,
+    }.toList(growable: false);
+    await showModalBottomSheet<void>(
+      context: context,
+      useSafeArea: true,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              AppSectionHeader(
+                title: reminder.reminderTitle,
+                subtitle:
+                    '${participants.length} users have access to this reminder',
+              ),
+              const SizedBox(height: 12),
+              Flexible(
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: participants.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 8),
+                  itemBuilder: (_, index) {
+                    final uid = participants[index];
+                    final isOwner = uid == reminder.ownerUid;
+                    final isYou = uid == currentUid;
+                    final role = isOwner ? 'Owner' : 'Participant';
+                    final suffix = isYou ? ' • You' : '';
+                    return AppSurfaceCard(
+                      dense: true,
+                      child: Row(
+                        children: [
+                          Icon(
+                            isOwner
+                                ? Icons.shield_rounded
+                                : Icons.person_rounded,
+                            size: 18,
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '$role$suffix',
+                                  style: Theme.of(context).textTheme.labelMedium
+                                      ?.copyWith(fontWeight: FontWeight.w700),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  uid,
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              ],
+                            ),
+                          ),
+                          IconButton(
+                            onPressed: () =>
+                                _copyToClipboard(uid, 'User ID copied'),
+                            icon: const Icon(Icons.copy_rounded),
+                            tooltip: 'Copy user ID',
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   @override
@@ -116,22 +209,33 @@ class _SharingPageState extends State<SharingPage> {
                   Expanded(
                     child: _TopSwitch(
                       label: 'Share link',
-                      selected: _shareTab,
-                      onTap: () => setState(() => _shareTab = true),
+                      selected: _activeTab == _SharingTab.shareLink,
+                      onTap: () =>
+                          setState(() => _activeTab = _SharingTab.shareLink),
                     ),
                   ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: _TopSwitch(
                       label: 'Join with link',
-                      selected: !_shareTab,
-                      onTap: () => setState(() => _shareTab = false),
+                      selected: _activeTab == _SharingTab.joinLink,
+                      onTap: () =>
+                          setState(() => _activeTab = _SharingTab.joinLink),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _TopSwitch(
+                      label: 'Remainders',
+                      selected: _activeTab == _SharingTab.reminders,
+                      onTap: () =>
+                          setState(() => _activeTab = _SharingTab.reminders),
                     ),
                   ),
                 ],
               ),
               const SizedBox(height: 12),
-              if (_shareTab)
+              if (_activeTab == _SharingTab.shareLink)
                 _ShareTab(
                   active: active,
                   busy: _busy,
@@ -140,99 +244,16 @@ class _SharingPageState extends State<SharingPage> {
                   onReminderChanged: (v) =>
                       setState(() => _selectedReminderId = v),
                   onCreate: _create,
+                  onCopy: _copyToClipboard,
                 )
+              else if (_activeTab == _SharingTab.joinLink)
+                _JoinTab(busy: _busy, inviteCode: _inviteCode, onJoin: _join)
               else
-                _JoinTab(busy: _busy, inviteCode: _inviteCode, onJoin: _join),
-              const SizedBox(height: 12),
-              const AppSectionHeader(
-                title: 'Shared Reminders',
-                subtitle: 'Reminders where you are owner or participant',
-              ),
-              const SizedBox(height: 8),
-              StreamBuilder<List<SharedReminder>>(
-                stream: SharedReminderService.watchMine(user.uid),
-                builder: (context, snap) {
-                  if (!snap.hasData) {
-                    return const AppLoadingIndicator(
-                      label: 'Loading shared reminders...',
-                    );
-                  }
-                  final shared = snap.data!;
-                  if (shared.isEmpty) {
-                    return const AppEmptyState(
-                      icon: Icons.group_outlined,
-                      title: 'No shared reminders yet',
-                      message:
-                          'Create an invite code or join one to collaborate.',
-                    );
-                  }
-                  return Column(
-                    children: shared
-                        .map(
-                          (item) => Padding(
-                            padding: const EdgeInsets.only(bottom: 8),
-                            child: AppSurfaceCard(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    children: [
-                                      Expanded(
-                                        child: Text(
-                                          item.reminderTitle,
-                                          style: Theme.of(
-                                            context,
-                                          ).textTheme.titleSmall,
-                                        ),
-                                      ),
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 8,
-                                          vertical: 3,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: AppTone.of(
-                                            context,
-                                          ).success.withValues(alpha: 0.14),
-                                          borderRadius: BorderRadius.circular(
-                                            8,
-                                          ),
-                                        ),
-                                        child: Text(
-                                          'Active',
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .labelSmall
-                                              ?.copyWith(
-                                                color: AppTone.of(
-                                                  context,
-                                                ).success,
-                                              ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 6),
-                                  Text(
-                                    'Owner: ${item.ownerUid}\nParticipants: ${item.participantUids.length}',
-                                    style: Theme.of(
-                                      context,
-                                    ).textTheme.bodySmall,
-                                  ),
-                                  const SizedBox(height: 8),
-                                  AppInlineMessage(
-                                    text: 'Invite code: ${item.inviteCode}',
-                                    icon: Icons.key_rounded,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        )
-                        .toList(growable: false),
-                  );
-                },
-              ),
+                _SharedRemindersTab(
+                  currentUid: user.uid,
+                  onOpenParticipants: _showSharedReminderMembers,
+                  onCopy: _copyToClipboard,
+                ),
               if (!AppServices.reminders.isPremiumMode) ...[
                 const SizedBox(height: 12),
                 const AppInlineMessage(
@@ -256,6 +277,7 @@ class _ShareTab extends StatelessWidget {
   final String? createdInviteLink;
   final ValueChanged<String?> onReminderChanged;
   final Future<void> Function() onCreate;
+  final Future<void> Function(String value, String message) onCopy;
 
   const _ShareTab({
     required this.active,
@@ -264,10 +286,29 @@ class _ShareTab extends StatelessWidget {
     required this.createdInviteLink,
     required this.onReminderChanged,
     required this.onCreate,
+    required this.onCopy,
   });
+
+  String _extractInviteCode(String inviteLink) {
+    final uri = Uri.tryParse(inviteLink);
+    if (uri == null) return '';
+    final queryCode = uri.queryParameters['code']?.trim();
+    if (queryCode != null && queryCode.isNotEmpty) {
+      return queryCode.toUpperCase();
+    }
+    for (final segment in uri.pathSegments.reversed) {
+      final part = segment.trim();
+      if (part.isNotEmpty) {
+        return part.toUpperCase();
+      }
+    }
+    return '';
+  }
 
   @override
   Widget build(BuildContext context) {
+    final inviteLink = (createdInviteLink ?? '').trim();
+    final inviteCode = inviteLink.isEmpty ? '' : _extractInviteCode(inviteLink);
     return AppSurfaceCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -297,9 +338,9 @@ class _ShareTab extends StatelessWidget {
           FilledButton.icon(
             onPressed: busy || active.isEmpty ? null : () => onCreate(),
             icon: const Icon(Icons.send_rounded),
-            label: const Text('Generate Invite Code'),
+            label: const Text('Generate Invite Link'),
           ),
-          if ((createdInviteLink ?? '').isNotEmpty) ...[
+          if (inviteLink.isNotEmpty) ...[
             const SizedBox(height: 10),
             AppSurfaceCard(
               dense: true,
@@ -308,27 +349,45 @@ class _ShareTab extends StatelessWidget {
                 children: [
                   Expanded(
                     child: SelectableText(
-                      createdInviteLink!,
+                      inviteLink,
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ),
                   IconButton(
-                    onPressed: () async {
-                      await Clipboard.setData(
-                        ClipboardData(text: createdInviteLink!),
-                      );
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Invite copied')),
-                        );
-                      }
-                    },
+                    onPressed: () => onCopy(inviteLink, 'Invite link copied'),
                     icon: const Icon(Icons.copy_rounded),
                     tooltip: 'Copy',
                   ),
                 ],
               ),
             ),
+            if (inviteCode.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              AppSurfaceCard(
+                dense: true,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 8,
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.key_rounded, size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Invite code: $inviteCode',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => onCopy(inviteCode, 'Invite code copied'),
+                      icon: const Icon(Icons.copy_rounded),
+                      tooltip: 'Copy invite code',
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ],
         ],
       ),
@@ -362,7 +421,7 @@ class _JoinTab extends StatelessWidget {
             controller: inviteCode,
             decoration: const InputDecoration(
               labelText: 'Invite code or link',
-              hintText: 'snooze.app/invite/abcd1234',
+              hintText: 'https://snooze.app/invite/ABCD1234?sid=...',
             ),
           ),
           const SizedBox(height: 10),
@@ -372,6 +431,129 @@ class _JoinTab extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _SharedRemindersTab extends StatelessWidget {
+  final String currentUid;
+  final Future<void> Function(SharedReminder reminder) onOpenParticipants;
+  final Future<void> Function(String value, String message) onCopy;
+
+  const _SharedRemindersTab({
+    required this.currentUid,
+    required this.onOpenParticipants,
+    required this.onCopy,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<List<SharedReminder>>(
+      stream: SharedReminderService.watchMine(currentUid),
+      builder: (context, snap) {
+        if (!snap.hasData) {
+          return const AppLoadingIndicator(
+            label: 'Loading shared reminders...',
+          );
+        }
+        final shared = snap.data!;
+        if (shared.isEmpty) {
+          return const AppEmptyState(
+            icon: Icons.group_outlined,
+            title: 'No shared reminders yet',
+            message: 'Create an invite code or join one to collaborate.',
+          );
+        }
+        return Column(
+          children: [
+            const AppSectionHeader(
+              title: 'Shared Reminders',
+              subtitle: 'Tap any reminder to see all users with access',
+            ),
+            const SizedBox(height: 8),
+            ...shared.map(
+              (item) => Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: AppSurfaceCard(
+                  onTap: () => onOpenParticipants(item),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              item.reminderTitle,
+                              style: Theme.of(context).textTheme.titleSmall,
+                            ),
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 3,
+                            ),
+                            decoration: BoxDecoration(
+                              color: AppTone.of(
+                                context,
+                              ).success.withValues(alpha: 0.14),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              'Active',
+                              style: Theme.of(context).textTheme.labelSmall
+                                  ?.copyWith(
+                                    color: AppTone.of(context).success,
+                                  ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        'Owner: ${item.ownerUid == currentUid ? 'You' : item.ownerUid}\nParticipants: ${item.participantUids.length}',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 8),
+                      AppSurfaceCard(
+                        dense: true,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 8,
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.key_rounded, size: 18),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Invite code: ${item.inviteCode}',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ),
+                            IconButton(
+                              onPressed: () =>
+                                  onCopy(item.inviteCode, 'Invite code copied'),
+                              icon: const Icon(Icons.copy_rounded),
+                              tooltip: 'Copy invite code',
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        'Tap to view users who can access this reminder',
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: AppTone.of(context).mutedText,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }

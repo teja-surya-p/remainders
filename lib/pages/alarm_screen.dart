@@ -40,8 +40,7 @@ class _AlarmScreenState extends State<AlarmScreen>
   @override
   void initState() {
     super.initState();
-    AlarmPlayer.start();
-    AlarmVibration.start();
+    _startAlarmMedia();
 
     Future<void>.delayed(const Duration(seconds: 1), () async {
       while (mounted) {
@@ -50,6 +49,18 @@ class _AlarmScreenState extends State<AlarmScreen>
         await Future<void>.delayed(const Duration(seconds: 2));
       }
     });
+  }
+
+  Future<void> _startAlarmMedia() async {
+    String? alarmSoundId;
+    try {
+      final reminder = await AppServices.reminders.getReminder(
+        widget.reminderId,
+      );
+      alarmSoundId = reminder?.alarmSoundId;
+    } catch (_) {}
+    await AlarmPlayer.start(alarmSoundId: alarmSoundId);
+    await AlarmVibration.start();
   }
 
   Future<void> _stop() async {

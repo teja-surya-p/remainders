@@ -146,7 +146,7 @@ class SharedReminderService {
   }
 
   static String _buildInviteLink(String sharedId, String code) {
-    return 'snooze://share?sid=$sharedId&code=$code';
+    return 'https://snooze.app/invite/$code?sid=$sharedId';
   }
 
   static _ParsedInvite _parseInvite(String input) {
@@ -157,6 +157,10 @@ class SharedReminderService {
 
     final upper = trimmed.toUpperCase();
     if (!upper.contains('://')) {
+      if (upper.contains('/')) {
+        final code = upper.split('/').where((part) => part.isNotEmpty).last;
+        return _ParsedInvite(sharedId: null, code: code);
+      }
       return _ParsedInvite(sharedId: null, code: upper);
     }
 
@@ -166,7 +170,10 @@ class SharedReminderService {
     }
 
     final sid = uri.queryParameters['sid'];
-    final code = (uri.queryParameters['code'] ?? '').toUpperCase();
+    var code = (uri.queryParameters['code'] ?? '').toUpperCase();
+    if (code.isEmpty && uri.pathSegments.isNotEmpty) {
+      code = uri.pathSegments.last.toUpperCase();
+    }
     return _ParsedInvite(sharedId: sid, code: code);
   }
 }

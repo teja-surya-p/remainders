@@ -1,16 +1,25 @@
 # snooze_app
 
-A new Flutter project.
+A Flutter reminder app with RevenueCat subscriptions.
 
-## Getting Started
+## RevenueCat live key setup (required for real purchases)
 
-This project is a starting point for a Flutter application.
+1. Copy key template:
+```bash
+cp revenuecat.keys.local.json.example revenuecat.keys.local.json
+```
+2. Edit `revenuecat.keys.local.json` and set:
+- `RC_ANDROID_PUBLIC_KEY` to your RevenueCat Android public SDK key (`goog_...`)
+- `RC_IOS_PUBLIC_KEY` to your RevenueCat iOS public SDK key (`appl_...`)
 
-A few resources to get you started if this is your first Flutter project:
+3. Run Android with live keys:
+```bash
+./scripts/run_android_live.sh
+```
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+4. Build Android AAB with live keys:
+```bash
+./scripts/build_android_live_aab.sh
+```
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+`revenuecat.keys.local.json` is gitignored and should never be committed.

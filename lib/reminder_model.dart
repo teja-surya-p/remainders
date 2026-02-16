@@ -2,6 +2,8 @@ import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import 'reminder_sounds.dart';
+
 enum RepeatType { none, daily, weekly, interval }
 
 RepeatType repeatTypeFromString(String? value) {
@@ -179,6 +181,8 @@ class ReminderModel {
   final ReminderRecurrence recurrence;
   final ReminderAlertMode alertMode;
   final ReminderPriority priority;
+  final String alarmSoundId;
+  final String notificationSoundId;
   final int currentStreak;
   final int longestStreak;
   final DateTime? lastCompletedAt;
@@ -211,6 +215,8 @@ class ReminderModel {
     ReminderRecurrence? recurrence,
     this.alertMode = ReminderAlertMode.ringAndNotify,
     this.priority = ReminderPriority.medium,
+    this.alarmSoundId = ReminderSounds.defaultAlarmSoundId,
+    this.notificationSoundId = ReminderSounds.defaultNotificationSoundId,
     this.currentStreak = 0,
     this.longestStreak = 0,
     this.lastCompletedAt,
@@ -243,6 +249,8 @@ class ReminderModel {
     ReminderRecurrence? recurrence,
     ReminderAlertMode? alertMode,
     ReminderPriority? priority,
+    String? alarmSoundId,
+    String? notificationSoundId,
     int? currentStreak,
     int? longestStreak,
     DateTime? lastCompletedAt,
@@ -282,6 +290,8 @@ class ReminderModel {
       recurrence: recurrence ?? this.recurrence,
       alertMode: alertMode ?? this.alertMode,
       priority: priority ?? this.priority,
+      alarmSoundId: alarmSoundId ?? this.alarmSoundId,
+      notificationSoundId: notificationSoundId ?? this.notificationSoundId,
       currentStreak: currentStreak ?? this.currentStreak,
       longestStreak: longestStreak ?? this.longestStreak,
       lastCompletedAt: clearLastCompletedAt
@@ -329,6 +339,8 @@ class ReminderModel {
       'recurrence': recurrence.toJson(),
       'alertMode': reminderAlertModeToString(alertMode),
       'priority': reminderPriorityToString(priority),
+      'alarmSoundId': alarmSoundId,
+      'notificationSoundId': notificationSoundId,
       'currentStreak': currentStreak,
       'longestStreak': longestStreak,
       'lastCompletedAt': lastCompletedAt?.toIso8601String(),
@@ -361,6 +373,8 @@ class ReminderModel {
       'recurrence': recurrence.toCloudMap(),
       'alertMode': reminderAlertModeToString(alertMode),
       'priority': reminderPriorityToString(priority),
+      'alarmSoundId': alarmSoundId,
+      'notificationSoundId': notificationSoundId,
       'currentStreak': currentStreak,
       'longestStreak': longestStreak,
       'lastCompletedAt': _timestampOrNull(lastCompletedAt),
@@ -397,6 +411,12 @@ class ReminderModel {
       ),
       alertMode: reminderAlertModeFromString(json['alertMode'] as String?),
       priority: reminderPriorityFromString(json['priority'] as String?),
+      alarmSoundId:
+          (json['alarmSoundId'] as String?) ??
+          ReminderSounds.defaultAlarmSoundId,
+      notificationSoundId:
+          (json['notificationSoundId'] as String?) ??
+          ReminderSounds.defaultNotificationSoundId,
       currentStreak: (json['currentStreak'] as num?)?.toInt() ?? 0,
       longestStreak: (json['longestStreak'] as num?)?.toInt() ?? 0,
       lastCompletedAt: _parseDate(json['lastCompletedAt']),
@@ -433,6 +453,12 @@ class ReminderModel {
       ),
       alertMode: reminderAlertModeFromString(data['alertMode'] as String?),
       priority: reminderPriorityFromString(data['priority'] as String?),
+      alarmSoundId:
+          (data['alarmSoundId'] as String?) ??
+          ReminderSounds.defaultAlarmSoundId,
+      notificationSoundId:
+          (data['notificationSoundId'] as String?) ??
+          ReminderSounds.defaultNotificationSoundId,
       currentStreak: (data['currentStreak'] as num?)?.toInt() ?? 0,
       longestStreak: (data['longestStreak'] as num?)?.toInt() ?? 0,
       lastCompletedAt: _parseDate(data['lastCompletedAt']),

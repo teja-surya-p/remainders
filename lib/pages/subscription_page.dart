@@ -1,5 +1,9 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:purchases_flutter/purchases_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../components/common/app_loading.dart';
 import '../components/common/app_ui.dart';
@@ -7,6 +11,8 @@ import '../subscription_service.dart';
 import '../theme/app_tokens.dart';
 import 'legal_pages.dart';
 import 'plan_comparison_page.dart';
+
+enum _PlanKind { monthly, yearly, lifetime }
 
 class SubscriptionPage extends StatefulWidget {
   final SubscriptionService subscription;
@@ -23,6 +29,7 @@ class SubscriptionPage extends StatefulWidget {
 }
 
 class _SubscriptionPageState extends State<SubscriptionPage> {
+  static const String _androidPackageName = 'com.suryatejap24.snooze';
   bool _loadingProducts = true;
   String? _error;
   List<Package> _packages = const [];
@@ -43,9 +50,7 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
 
     try {
       final offerings = await widget.subscription.fetchOfferings();
-      final current = offerings?.current;
-      final packages = current?.availablePackages ?? const <Package>[];
-      final sorted = _sortPackages(packages);
+      final sorted = _resolvePackagesFromOfferings(offerings);
       setState(() {
         _packages = sorted;
         _selectedId = _selectedId ?? _defaultPackageId(sorted);
@@ -53,9 +58,191 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
     } catch (e) {
       setState(() => _error = e.toString());
     } finally {
-      if (!mounted) return;
-      setState(() => _loadingProducts = false);
+      if (mounted) {
+        setState(() => _loadingProducts = false);
+      }
     }
+  }
+
+  List<Package> _resolvePackagesFromOfferings(Offerings? offerings) {
+    if (offerings == null) return const <Package>[];
+
+    final current =
+        offerings.current ??
+        (offerings.all.isNotEmpty ? offerings.all.values.first : null);
+
+    final currentPackages = List<Package>.from(
+      current?.availablePackages ?? const <Package>[],
+    );
+    final allPackages = <Package>[];
+    final seen = <String>{};
+
+    void addUnique(Iterable<Package> source) {
+      for (final p in source) {
+        final key = _packageKey(p);
+        if (seen.add(key)) {
+          allPackages.add(p);
+        }
+      }
+    }
+
+    addUnique(currentPackages);
+    for (final offering in offerings.all.values) {
+      addUnique(offering.availablePackages);
+    }
+
+    final planPackages = <_PlanKind, Package>{};
+    for (final kind in const [
+      _PlanKind.monthly,
+      _PlanKind.yearly,
+      _PlanKind.lifetime,
+    ]) {
+      final selectedFromCurrent = _selectBestPackageForKind(
+        kind: kind,
+        candidates: currentPackages,
+      );
+      final selected =
+          selectedFromCurrent ??
+          _selectBestPackageForKind(kind: kind, candidates: allPackages);
+      if (selected != null) {
+        planPackages[kind] = selected;
+      }
+    }
+
+    final ordered = <Package>[];
+    final orderedKeys = <String>{};
+    void addOrdered(Package package) {
+      final key = _packageKey(package);
+      if (orderedKeys.add(key)) {
+        ordered.add(package);
+      }
+    }
+
+    for (final kind in const [
+      _PlanKind.monthly,
+      _PlanKind.yearly,
+      _PlanKind.lifetime,
+    ]) {
+      final plan = planPackages[kind];
+      if (plan != null) {
+        addOrdered(plan);
+      }
+    }
+
+    for (final p in _sortPackages(currentPackages)) {
+      addOrdered(p);
+    }
+    for (final p in _sortPackages(allPackages)) {
+      addOrdered(p);
+    }
+
+    if (ordered.isEmpty) {
+      return _sortPackages(allPackages);
+    }
+
+    return ordered;
+  }
+
+  String _packageKey(Package package) {
+    return '${package.identifier}|${package.storeProduct.identifier}';
+  }
+
+  Package? _selectBestPackageForKind({
+    required _PlanKind kind,
+    required List<Package> candidates,
+  }) {
+    final matching = candidates
+        .where((candidate) {
+          return _detectPlanKind(candidate) == kind;
+        })
+        .toList(growable: false);
+    if (matching.isEmpty) return null;
+
+    final canonical = matching
+        .where((candidate) {
+          return _isCanonicalIdMatch(kind, candidate);
+        })
+        .toList(growable: false);
+
+    final source = canonical.isNotEmpty ? canonical : matching;
+    final pool = source;
+
+    pool.sort((a, b) {
+      final byPrice = a.storeProduct.price.compareTo(b.storeProduct.price);
+      if (byPrice != 0) return byPrice;
+      return a.identifier.compareTo(b.identifier);
+    });
+    return pool.first;
+  }
+
+  bool _isCanonicalIdMatch(_PlanKind kind, Package package) {
+    final storeId = package.storeProduct.identifier.toLowerCase();
+    final storeRoot = storeId.split(':').first;
+    final packageId = package.identifier.toLowerCase();
+    switch (kind) {
+      case _PlanKind.monthly:
+        return package.packageType == PackageType.monthly ||
+            storeRoot == 'monthly' ||
+            packageId.endsWith('.monthly');
+      case _PlanKind.yearly:
+        return package.packageType == PackageType.annual ||
+            storeRoot == 'yearly' ||
+            storeRoot == 'annual' ||
+            packageId.endsWith('.annual');
+      case _PlanKind.lifetime:
+        return package.packageType == PackageType.lifetime ||
+            storeRoot == 'lifetime' ||
+            packageId.endsWith('.lifetime');
+    }
+  }
+
+  _PlanKind? _detectPlanKind(Package p) {
+    switch (p.packageType) {
+      case PackageType.monthly:
+        return _PlanKind.monthly;
+      case PackageType.annual:
+        return _PlanKind.yearly;
+      case PackageType.lifetime:
+        return _PlanKind.lifetime;
+      default:
+        break;
+    }
+
+    final tokens = [
+      _normalizePlanToken(p.identifier),
+      _normalizePlanToken(p.storeProduct.identifier),
+      _normalizePlanToken(p.storeProduct.title),
+    ].join(' ');
+
+    if (_containsAny(tokens, const [
+      'lifetime',
+      'life time',
+      'one time',
+      'onetime',
+      'forever',
+      'permanent',
+    ])) {
+      return _PlanKind.lifetime;
+    }
+    if (_containsAny(tokens, const ['yearly', 'annual', 'year'])) {
+      return _PlanKind.yearly;
+    }
+    if (_containsAny(tokens, const ['monthly', 'month'])) {
+      return _PlanKind.monthly;
+    }
+
+    return null;
+  }
+
+  String _normalizePlanToken(String value) {
+    return value.toLowerCase().replaceAll(RegExp(r'[_\.\-:]'), ' ');
+  }
+
+  bool _containsAny(String value, List<String> needles) {
+    for (final needle in needles) {
+      if (value.contains(needle)) return true;
+    }
+    return false;
   }
 
   List<Package> _sortPackages(List<Package> packages) {
@@ -70,10 +257,10 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
   }
 
   int _packageOrder(Package p) {
-    final id = p.storeProduct.identifier.toLowerCase();
-    if (id.contains('monthly')) return 0;
-    if (id.contains('yearly') || id.contains('annual')) return 1;
-    if (id.contains('lifetime')) return 2;
+    final kind = _detectPlanKind(p);
+    if (kind == _PlanKind.monthly) return 0;
+    if (kind == _PlanKind.yearly) return 1;
+    if (kind == _PlanKind.lifetime) return 2;
     return 99;
   }
 
@@ -85,17 +272,144 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
   }
 
   bool _isYearly(Package p) {
-    final id = p.storeProduct.identifier.toLowerCase();
-    return id.contains('yearly') || id.contains('annual');
+    return _detectPlanKind(p) == _PlanKind.yearly;
   }
 
-  bool _isLifetime(Package p) {
-    final id = p.storeProduct.identifier.toLowerCase();
-    return id.contains('lifetime');
+  _PlanKind? _planFromProductIdentifier(String? productIdentifier) {
+    if (productIdentifier == null || productIdentifier.isEmpty) return null;
+    final token = _normalizePlanToken(productIdentifier);
+    if (_containsAny(token, const ['lifetime', 'life time', 'forever'])) {
+      return _PlanKind.lifetime;
+    }
+    if (_containsAny(token, const ['yearly', 'annual', 'year'])) {
+      return _PlanKind.yearly;
+    }
+    if (_containsAny(token, const ['monthly', 'month'])) {
+      return _PlanKind.monthly;
+    }
+    return null;
   }
 
-  bool _isMonthly(Package p) {
-    return p.storeProduct.identifier.toLowerCase().contains('monthly');
+  Package? _packageForKind(_PlanKind kind) {
+    for (final package in _packages) {
+      if (_detectPlanKind(package) == kind) {
+        return package;
+      }
+    }
+    return null;
+  }
+
+  NumberFormat? _currencyFormatFor(Package? package) {
+    if (package == null) return null;
+    final code = package.storeProduct.currencyCode;
+    return NumberFormat.simpleCurrency(name: code);
+  }
+
+  String _formatAmount(double value, Package? referencePackage) {
+    final formatter = _currencyFormatFor(referencePackage);
+    if (formatter != null) {
+      return formatter.format(value);
+    }
+    return value.toStringAsFixed(2);
+  }
+
+  String _formatDate(DateTime date) {
+    return DateFormat('MMM d, y • h:mm a').format(date);
+  }
+
+  String _planName(_PlanKind? kind) {
+    switch (kind) {
+      case _PlanKind.monthly:
+        return 'Monthly';
+      case _PlanKind.yearly:
+        return 'Yearly';
+      case _PlanKind.lifetime:
+        return 'Lifetime';
+      case null:
+        return 'Pro';
+    }
+  }
+
+  Future<void> _cancelSubscriptionWithConfirmation({
+    required _PlanKind planKind,
+    required String? productIdentifier,
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Cancel subscription?'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'If you cancel your ${_planName(planKind)} plan, you will lose:',
+              ),
+              const SizedBox(height: 10),
+              const Text('• Unlimited active reminders (back to 5/day)'),
+              const Text('• Advanced recurrence controls'),
+              const Text('• Full analytics and collaboration tools'),
+              const Text('• Premium cloud sync writes'),
+              const SizedBox(height: 10),
+              const Text('Are you sure you want to continue?'),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Keep my plan'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Continue to cancel'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    final opened = await _openSubscriptionManagement(productIdentifier);
+    if (!mounted) return;
+
+    if (opened) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Subscription management opened. Cancel there to stop auto-renewal.',
+          ),
+        ),
+      );
+    } else {
+      setState(() {
+        _error = 'Could not open subscription management page.';
+      });
+    }
+  }
+
+  Future<bool> _openSubscriptionManagement(String? productIdentifier) async {
+    if (Platform.isAndroid) {
+      final sku = productIdentifier?.split(':').first.trim();
+      final query = <String, String>{'package': _androidPackageName};
+      if (sku != null && sku.isNotEmpty) {
+        query['sku'] = sku;
+      }
+      final uri = Uri.https(
+        'play.google.com',
+        '/store/account/subscriptions',
+        query,
+      );
+      return launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+
+    if (Platform.isIOS) {
+      final uri = Uri.parse('https://apps.apple.com/account/subscriptions');
+      return launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+
+    return false;
   }
 
   Future<void> _buySelected() async {
@@ -116,8 +430,18 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
     });
 
     try {
-      await widget.subscription.purchasePackage(selected);
+      final result = await widget.subscription.purchasePackage(selected);
       if (!mounted) return;
+      if (result == PurchaseActionResult.cancelled) {
+        return;
+      }
+      if (result == PurchaseActionResult.noEntitlement) {
+        setState(() {
+          _error =
+              'Purchase succeeded but entitlement is still inactive. Verify RevenueCat entitlement mapping to "pro_access".';
+        });
+        return;
+      }
       if (!widget.asTab) {
         Navigator.pop(context);
       } else {
@@ -128,8 +452,9 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
     } catch (e) {
       setState(() => _error = e.toString());
     } finally {
-      if (!mounted) return;
-      setState(() => _processing = false);
+      if (mounted) {
+        setState(() => _processing = false);
+      }
     }
   }
 
@@ -140,8 +465,14 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
     });
 
     try {
-      await widget.subscription.restorePurchases();
+      final result = await widget.subscription.restorePurchases();
       if (!mounted) return;
+      if (result == PurchaseActionResult.noEntitlement) {
+        setState(() {
+          _error = 'No active purchases were found to restore.';
+        });
+        return;
+      }
       if (widget.subscription.isPremium) {
         if (!widget.asTab) {
           Navigator.pop(context);
@@ -154,8 +485,9 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
     } catch (e) {
       setState(() => _error = e.toString());
     } finally {
-      if (!mounted) return;
-      setState(() => _processing = false);
+      if (mounted) {
+        setState(() => _processing = false);
+      }
     }
   }
 
@@ -174,16 +506,33 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
               16,
               widget.asTab ? 56 : 16,
               16,
-              widget.asTab ? 112 : 24,
+              widget.asTab ? 168 : 24,
             ),
             children: [
               _header(context, subState),
               const SizedBox(height: 12),
               if (subState.isPremium)
-                _activeState(context)
+                _activeState(context, subState)
               else ...[
                 _featureCard(context),
                 const SizedBox(height: 10),
+                if (subState.source == 'missing_keys')
+                  const AppInlineMessage(
+                    text:
+                        'RevenueCat public key is missing. Set RC_ANDROID_PUBLIC_KEY and RC_IOS_PUBLIC_KEY (or RC_PUBLIC_KEY) to enable live purchases.',
+                    icon: Icons.key_rounded,
+                  )
+                else if (subState.source == 'awaiting_user')
+                  const AppInlineMessage(
+                    text:
+                        'Sign in with an authenticated account before purchasing.',
+                    icon: Icons.person_rounded,
+                  )
+                else
+                  const SizedBox.shrink(),
+                if (subState.source == 'missing_keys' ||
+                    subState.source == 'awaiting_user')
+                  const SizedBox(height: 10),
                 if (subState.source == 'assumed_pro_no_revenuecat')
                   const AppInlineMessage(
                     text:
@@ -368,7 +717,114 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
     );
   }
 
-  Widget _activeState(BuildContext context) {
+  Widget _activeState(BuildContext context, SubscriptionState subState) {
+    final activePlanKind = _planFromProductIdentifier(
+      subState.activeProductIdentifier,
+    );
+    final monthly = _packageForKind(_PlanKind.monthly);
+    final yearly = _packageForKind(_PlanKind.yearly);
+    final lifetime = _packageForKind(_PlanKind.lifetime);
+
+    final statusLines = <String>[];
+    if (activePlanKind == _PlanKind.lifetime) {
+      statusLines.add('Active plan: Lifetime (no expiry)');
+    } else if (subState.entitlementExpirationDate != null) {
+      statusLines.add(
+        'Active until ${_formatDate(subState.entitlementExpirationDate!)}',
+      );
+      if (subState.entitlementWillRenew == true) {
+        statusLines.add('Auto-renew is ON');
+      } else if (subState.entitlementWillRenew == false) {
+        statusLines.add('Auto-renew is OFF');
+      }
+    } else {
+      statusLines.add('Active plan: ${_planName(activePlanKind)}');
+    }
+
+    if (subState.latestPurchaseDate != null) {
+      statusLines.add(
+        'Last purchase: ${_formatDate(subState.latestPurchaseDate!)}',
+      );
+    }
+
+    if (subState.unsubscribeDetectedAt != null) {
+      statusLines.add(
+        'Cancellation detected on ${_formatDate(subState.unsubscribeDetectedAt!)}',
+      );
+    }
+
+    final suggestions = <Widget>[];
+    if (activePlanKind == _PlanKind.monthly &&
+        monthly != null &&
+        yearly != null &&
+        lifetime != null) {
+      final monthlyPrice = monthly.storeProduct.price;
+      final yearlyIfMonthly = monthlyPrice * 12;
+      final yearlySavings = yearlyIfMonthly - yearly.storeProduct.price;
+      if (yearlySavings > 0) {
+        suggestions.add(
+          _PlanSuggestionCard(
+            icon: Icons.trending_up_rounded,
+            title: 'Yearly discount available',
+            message:
+                'Yearly is ${yearly.storeProduct.priceString} instead of ${_formatAmount(yearlyIfMonthly, monthly)} per year on monthly. You save about ${_formatAmount(yearlySavings, monthly)}.',
+          ),
+        );
+      }
+
+      final twoYearsMonthly = monthlyPrice * 24;
+      final lifetimeSavings = twoYearsMonthly - lifetime.storeProduct.price;
+      final breakEvenMonths = monthlyPrice > 0
+          ? lifetime.storeProduct.price / monthlyPrice
+          : null;
+      suggestions.add(
+        _PlanSuggestionCard(
+          icon: Icons.workspace_premium_rounded,
+          title: 'Lifetime option',
+          message:
+              'Lifetime is ${lifetime.storeProduct.priceString} one-time.${breakEvenMonths != null ? ' Break-even is about ${breakEvenMonths.toStringAsFixed(1)} months of monthly.' : ''}${lifetimeSavings > 0 ? ' Compared to 2 years of monthly, you save about ${_formatAmount(lifetimeSavings, monthly)}.' : ''}',
+        ),
+      );
+    } else if (activePlanKind == _PlanKind.yearly &&
+        monthly != null &&
+        yearly != null &&
+        lifetime != null) {
+      final yearlyIfMonthly = monthly.storeProduct.price * 12;
+      final yearlySavings = yearlyIfMonthly - yearly.storeProduct.price;
+      if (yearlySavings > 0) {
+        suggestions.add(
+          _PlanSuggestionCard(
+            icon: Icons.check_circle_outline_rounded,
+            title: 'You are already saving with yearly',
+            message:
+                'Yearly at ${yearly.storeProduct.priceString} saves about ${_formatAmount(yearlySavings, monthly)} versus paying monthly for a year.',
+          ),
+        );
+      }
+
+      final yearlyPrice = yearly.storeProduct.price;
+      final breakEvenYears = yearlyPrice > 0
+          ? lifetime.storeProduct.price / yearlyPrice
+          : null;
+      suggestions.add(
+        _PlanSuggestionCard(
+          icon: Icons.auto_awesome_rounded,
+          title: 'Lifetime upgrade insight',
+          message:
+              'Lifetime is ${lifetime.storeProduct.priceString} one-time.${breakEvenYears != null ? ' Break-even is about ${breakEvenYears.toStringAsFixed(1)} years of yearly renewals.' : ''}',
+        ),
+      );
+    } else if (activePlanKind == _PlanKind.lifetime) {
+      suggestions.add(
+        const _PlanSuggestionCard(
+          icon: Icons.verified_rounded,
+          title: 'Best long-term value unlocked',
+          message:
+              'You are on Lifetime, so there is no recurring billing and no renewal management required.',
+        ),
+      );
+    }
+
     return AppSurfaceCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -386,9 +842,59 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
             text: 'Cloud sync and collaboration enabled',
           ),
           const SizedBox(height: 8),
-          OutlinedButton(
-            onPressed: _processing ? null : _restore,
-            child: const Text('Manage / Restore purchases'),
+          Text(
+            'Subscription details',
+            style: Theme.of(
+              context,
+            ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 6),
+          ...statusLines.map(
+            (line) => Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Text(line, style: Theme.of(context).textTheme.bodySmall),
+            ),
+          ),
+          if (subState.billingIssueDetectedAt != null) ...[
+            const SizedBox(height: 8),
+            AppInlineMessage(
+              text:
+                  'Billing issue detected on ${_formatDate(subState.billingIssueDetectedAt!)}. Update your payment method in your store account.',
+              icon: Icons.warning_amber_rounded,
+              color: Theme.of(context).colorScheme.error,
+            ),
+          ],
+          if (suggestions.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            ...suggestions.map(
+              (card) => Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: card,
+              ),
+            ),
+          ],
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton(
+                onPressed: _processing ? null : _restore,
+                child: const Text('Manage / Restore purchases'),
+              ),
+              if (activePlanKind == _PlanKind.monthly ||
+                  activePlanKind == _PlanKind.yearly)
+                OutlinedButton.icon(
+                  onPressed: _processing
+                      ? null
+                      : () => _cancelSubscriptionWithConfirmation(
+                          planKind: activePlanKind!,
+                          productIdentifier: subState.activeProductIdentifier,
+                        ),
+                  icon: const Icon(Icons.cancel_rounded),
+                  label: const Text('Cancel subscription'),
+                ),
+            ],
           ),
         ],
       ),
@@ -413,7 +919,7 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
           top: false,
           child: Container(
             color: Theme.of(context).scaffoldBackgroundColor,
-            padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+            padding: EdgeInsets.fromLTRB(16, 10, 16, widget.asTab ? 84 : 12),
             child: FilledButton(
               onPressed: _processing || _loadingProducts || _packages.isEmpty
                   ? null
@@ -427,9 +933,10 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
   }
 
   String _labelFor(Package p) {
-    if (_isMonthly(p)) return 'Monthly';
-    if (_isYearly(p)) return 'Yearly';
-    if (_isLifetime(p)) return 'Lifetime';
+    final kind = _detectPlanKind(p);
+    if (kind == _PlanKind.monthly) return 'Monthly';
+    if (kind == _PlanKind.yearly) return 'Yearly';
+    if (kind == _PlanKind.lifetime) return 'Lifetime';
     return p.storeProduct.title;
   }
 }
@@ -516,6 +1023,54 @@ class _PlanCard extends StatelessWidget {
             style: Theme.of(
               context,
             ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PlanSuggestionCard extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String message;
+
+  const _PlanSuggestionCard({
+    required this.icon,
+    required this.title,
+    required this.message,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: cs.primary.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: cs.primary.withValues(alpha: 0.15)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 18, color: cs.primary),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: Theme.of(
+                    context,
+                  ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 4),
+                Text(message, style: Theme.of(context).textTheme.bodySmall),
+              ],
+            ),
           ),
         ],
       ),

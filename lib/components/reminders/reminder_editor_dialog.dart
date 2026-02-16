@@ -3,7 +3,9 @@ import 'package:intl/intl.dart';
 
 import '../common/app_ui.dart';
 import '../../reminder_model.dart';
+import '../../reminder_sounds.dart';
 import '../../reminder_service.dart';
+import '../../sound_preview_player.dart';
 
 class ReminderDraft {
   final String title;
@@ -12,6 +14,8 @@ class ReminderDraft {
   final ReminderRecurrence recurrence;
   final ReminderAlertMode alertMode;
   final ReminderPriority priority;
+  final String alarmSoundId;
+  final String notificationSoundId;
 
   ReminderDraft({
     required this.title,
@@ -20,6 +24,8 @@ class ReminderDraft {
     ReminderRecurrence? recurrence,
     this.alertMode = ReminderAlertMode.ringAndNotify,
     this.priority = ReminderPriority.medium,
+    this.alarmSoundId = ReminderSounds.defaultAlarmSoundId,
+    this.notificationSoundId = ReminderSounds.defaultNotificationSoundId,
   }) : recurrence = recurrence ?? ReminderRecurrence();
 }
 
@@ -52,6 +58,8 @@ class _ReminderEditorDialogState extends State<ReminderEditorDialog> {
   late RepeatType _repeatType;
   late ReminderAlertMode _alertMode;
   late ReminderPriority _priority;
+  late String _alarmSoundId;
+  late String _notificationSoundId;
   late final Set<int> _weekdays;
   late final List<int> _times;
 
@@ -72,6 +80,10 @@ class _ReminderEditorDialogState extends State<ReminderEditorDialog> {
     _repeatType = initial?.recurrence.type ?? RepeatType.none;
     _alertMode = initial?.alertMode ?? ReminderAlertMode.ringAndNotify;
     _priority = initial?.priority ?? ReminderPriority.medium;
+    _alarmSoundId = initial?.alarmSoundId ?? ReminderSounds.defaultAlarmSoundId;
+    _notificationSoundId =
+        initial?.notificationSoundId ??
+        ReminderSounds.defaultNotificationSoundId;
     _weekdays = {...(initial?.recurrence.weekdays ?? const <int>[])};
     _times = [...(initial?.recurrence.timesOfDay ?? const <int>[])]..sort();
     if (_times.isEmpty && _dueAt != null) {
@@ -82,10 +94,21 @@ class _ReminderEditorDialogState extends State<ReminderEditorDialog> {
 
   @override
   void dispose() {
+    SoundPreviewPlayer.stop();
     _title.dispose();
     _desc.dispose();
     _intervalDays.dispose();
     super.dispose();
+  }
+
+  Future<void> _previewAlarmSound() async {
+    final option = ReminderSounds.alarmById(_alarmSoundId);
+    await SoundPreviewPlayer.play(option);
+  }
+
+  Future<void> _previewNotificationSound() async {
+    final option = ReminderSounds.notificationById(_notificationSoundId);
+    await SoundPreviewPlayer.play(option);
   }
 
   Future<void> _pickDateTime() async {
@@ -319,6 +342,82 @@ class _ReminderEditorDialogState extends State<ReminderEditorDialog> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const AppSectionHeader(
+                      title: 'Sounds',
+                      subtitle: 'Choose default alarm and notification sounds',
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: DropdownButtonFormField<String>(
+                            initialValue: _alarmSoundId,
+                            decoration: const InputDecoration(
+                              labelText: 'Alarm sound',
+                            ),
+                            onChanged: (value) {
+                              if (value == null) return;
+                              setState(() => _alarmSoundId = value);
+                              _previewAlarmSound();
+                            },
+                            items: [
+                              for (final option in ReminderSounds.alarmOptions)
+                                DropdownMenuItem(
+                                  value: option.id,
+                                  child: Text(option.label),
+                                ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        IconButton.filledTonal(
+                          onPressed: _previewAlarmSound,
+                          tooltip: 'Preview alarm sound',
+                          icon: const Icon(Icons.play_arrow_rounded),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: DropdownButtonFormField<String>(
+                            initialValue: _notificationSoundId,
+                            decoration: const InputDecoration(
+                              labelText: 'Notification sound',
+                            ),
+                            onChanged: (value) {
+                              if (value == null) return;
+                              setState(() => _notificationSoundId = value);
+                              _previewNotificationSound();
+                            },
+                            items: [
+                              for (final option
+                                  in ReminderSounds.notificationOptions)
+                                DropdownMenuItem(
+                                  value: option.id,
+                                  child: Text(option.label),
+                                ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        IconButton.filledTonal(
+                          onPressed: _previewNotificationSound,
+                          tooltip: 'Preview notification sound',
+                          icon: const Icon(Icons.play_arrow_rounded),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+              AppSurfaceCard(
+                dense: true,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const AppSectionHeader(
                       title: 'Repeat',
                       subtitle: 'Configure recurring schedule',
                     ),
@@ -515,6 +614,8 @@ class _ReminderEditorDialogState extends State<ReminderEditorDialog> {
                     recurrence: recurrence,
                     alertMode: _alertMode,
                     priority: _priority,
+                    alarmSoundId: _alarmSoundId,
+                    notificationSoundId: _notificationSoundId,
                   );
 
                   setState(() {

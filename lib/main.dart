@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
@@ -48,15 +50,29 @@ class _Bootstrap extends StatefulWidget {
 }
 
 class _BootstrapState extends State<_Bootstrap> {
-  late final Future<void> _init = _initialize();
+  late Future<void> _init;
   bool _handledLaunch = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _init = _initialize();
+  }
 
   Future<void> _initialize() async {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
+    ).timeout(
+      const Duration(seconds: 15),
+      onTimeout: () =>
+          throw TimeoutException('Firebase initialization timed out.'),
     );
 
-    await AppServices.initialize();
+    await AppServices.initialize().timeout(
+      const Duration(seconds: 12),
+      onTimeout: () =>
+          throw TimeoutException('App services initialization timed out.'),
+    );
 
     try {
       await Notifs.init(
@@ -70,6 +86,13 @@ class _BootstrapState extends State<_Bootstrap> {
     }
   }
 
+  void _retryInit() {
+    setState(() {
+      _handledLaunch = false;
+      _init = _initialize();
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<void>(
@@ -80,7 +103,25 @@ class _BootstrapState extends State<_Bootstrap> {
         }
         if (snapshot.hasError) {
           return Scaffold(
-            body: Center(child: Text('Init error: ${snapshot.error}')),
+            body: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'Init error: ${snapshot.error}',
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 12),
+                    FilledButton(
+                      onPressed: _retryInit,
+                      child: const Text('Retry'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           );
         }
 
@@ -112,13 +153,29 @@ class _AuthGateState extends State<_AuthGate> {
   Future<void>? _bindFuture;
 
   Future<void> _bind(User user) async {
-    await AppServices.bindUser(user);
-    await UserStore.saveUser(user);
+    await AppServices.bindUser(user).timeout(
+      const Duration(seconds: 15),
+      onTimeout: () =>
+          throw TimeoutException('User binding timed out while loading data.'),
+    );
+    await UserStore.saveUser(user).timeout(
+      const Duration(seconds: 5),
+      onTimeout: () =>
+          throw TimeoutException('Failed to persist user session.'),
+    );
 
     ReminderScheduler.configure(AppServices.reminders);
-    await ReminderScheduler.start();
+    await ReminderScheduler.start().timeout(
+      const Duration(seconds: 8),
+      onTimeout: () =>
+          throw TimeoutException('Reminder scheduler start timed out.'),
+    );
     AlarmPopupService.configure(AppServices.reminders);
-    await AlarmPopupService.start();
+    await AlarmPopupService.start().timeout(
+      const Duration(seconds: 8),
+      onTimeout: () =>
+          throw TimeoutException('Alarm popup service start timed out.'),
+    );
   }
 
   Future<void> _unbind() async {
@@ -163,7 +220,29 @@ class _AuthGateState extends State<_AuthGate> {
             }
             if (bindSnapshot.hasError) {
               return Scaffold(
-                body: Center(child: Text('Bind error: ${bindSnapshot.error}')),
+                body: Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          'Bind error: ${bindSnapshot.error}',
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 12),
+                        FilledButton(
+                          onPressed: () {
+                            setState(() {
+                              _bindFuture = null;
+                            });
+                          },
+                          child: const Text('Retry'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               );
             }
             return const HomePage();

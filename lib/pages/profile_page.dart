@@ -196,12 +196,6 @@ class _ProfileBody extends StatelessWidget {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 10),
-                  AppInlineMessage(
-                    text:
-                        'Entitlement: ${subState.source} • UID: ${user.uid.substring(0, 8)}...',
-                    icon: Icons.security_rounded,
-                  ),
                 ],
               ),
             ),

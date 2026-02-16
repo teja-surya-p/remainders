@@ -148,6 +148,8 @@ class _ReminderListTabState extends State<_ReminderListTab> {
             recurrence: draft.recurrence,
             alertMode: draft.alertMode,
             priority: draft.priority,
+            alarmSoundId: draft.alarmSoundId,
+            notificationSoundId: draft.notificationSoundId,
           );
         },
       ),

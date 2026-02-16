@@ -183,6 +183,7 @@ class AppTheme {
         fillColor: colorScheme.secondary.withValues(alpha: 0.72),
         hintStyle: TextStyle(color: colorScheme.onSurfaceVariant),
         labelStyle: TextStyle(color: colorScheme.onSurfaceVariant),
+        errorStyle: TextStyle(color: colorScheme.error),
         contentPadding: const EdgeInsets.symmetric(
           horizontal: 14,
           vertical: 14,
@@ -198,6 +199,14 @@ class AppTheme {
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
           borderSide: BorderSide(color: colorScheme.primary, width: 1.4),
+        ),
+        errorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide(color: colorScheme.error, width: 1.2),
+        ),
+        focusedErrorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide(color: colorScheme.error, width: 1.6),
         ),
       ),
       chipTheme: ChipThemeData(
