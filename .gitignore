@@ -50,3 +50,4 @@ revenuecat.keys.local.json
 # Build reports and duplicate archives (untracked 2026-10-31)
 android/build/
 play_store_assets.zip
+coverage/
