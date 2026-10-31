@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'reminder_model.dart';
@@ -76,6 +77,7 @@ class LocalReminderStore implements ReminderStore {
 
   @override
   Future<void> upsertReminder(ReminderModel reminder) async {
+    await _refreshFromDisk();
     final index = _reminders.indexWhere((r) => r.id == reminder.id);
     if (index >= 0) {
       _reminders[index] = reminder;
@@ -89,6 +91,7 @@ class LocalReminderStore implements ReminderStore {
 
   @override
   Future<void> upsertReminders(List<ReminderModel> reminders) async {
+    await _refreshFromDisk();
     final map = {for (final r in _reminders) r.id: r};
     for (final reminder in reminders) {
       map[reminder.id] = reminder;
@@ -103,6 +106,7 @@ class LocalReminderStore implements ReminderStore {
 
   @override
   Future<void> deleteReminder(String id) async {
+    await _refreshFromDisk();
     _reminders.removeWhere((r) => r.id == id);
     await _persistReminders();
     _emitReminders();
@@ -120,6 +124,7 @@ class LocalReminderStore implements ReminderStore {
 
   @override
   Future<void> upsertEvent(ReminderEvent event) async {
+    await _refreshFromDisk();
     final index = _events.indexWhere((e) => e.id == event.id);
     if (index >= 0) {
       _events[index] = event;
@@ -133,6 +138,7 @@ class LocalReminderStore implements ReminderStore {
 
   @override
   Future<void> upsertEvents(List<ReminderEvent> events) async {
+    await _refreshFromDisk();
     final map = {for (final e in _events) e.id: e};
     for (final event in events) {
       map[event.id] = event;
@@ -143,6 +149,32 @@ class LocalReminderStore implements ReminderStore {
     _sortEvents();
     await _persistEvents();
     _emitEvents();
+  }
+
+  /// Re-reads saved data (e.g. on app resume) so changes made by another
+  /// isolate — a snooze from the notification while the app was in the
+  /// background — show up, then notifies listeners.
+  Future<void> reload() async {
+    await _refreshFromDisk();
+    _emit();
+  }
+
+  /// The notification-action background isolate keeps its own copy of the
+  /// data. Every write re-reads the latest saved state first, so one
+  /// isolate's copy never overwrites the other's changes. Both isolates run in
+  /// the same Android process, so `reload()` sees each other's writes at once.
+  Future<void> _refreshFromDisk() async {
+    final prefs = _prefs;
+    if (prefs == null) return;
+    await prefs.reload();
+    _reminders
+      ..clear()
+      ..addAll(_readReminders());
+    _events
+      ..clear()
+      ..addAll(_readEvents());
+    _sortReminders();
+    _sortEvents();
   }
 
   @override
@@ -165,17 +197,11 @@ class LocalReminderStore implements ReminderStore {
     final raw = prefs.getString(_reminderKey);
     if (raw == null || raw.isEmpty) return const [];
 
-    try {
-      final list = jsonDecode(raw) as List<dynamic>;
-      return list
-          .whereType<Map<dynamic, dynamic>>()
-          .map(Map<String, dynamic>.from)
-          .map(ReminderModel.fromJson)
-          .where((r) => r.id.isNotEmpty)
-          .toList();
-    } catch (_) {
-      return const [];
-    }
+    return _decodeList(
+      raw,
+      _reminderKey,
+      ReminderModel.fromJson,
+    ).where((r) => r.id.isNotEmpty).toList();
   }
 
   List<ReminderEvent> _readEvents() {
@@ -184,17 +210,51 @@ class LocalReminderStore implements ReminderStore {
     final raw = prefs.getString(_eventsKey);
     if (raw == null || raw.isEmpty) return const [];
 
+    return _decodeList(
+      raw,
+      _eventsKey,
+      ReminderEvent.fromJson,
+    ).where((e) => e.id.isNotEmpty).toList();
+  }
+
+  /// Decodes a saved list item by item. An unreadable item is skipped instead
+  /// of losing the whole list; if anything was unreadable, the raw value is
+  /// copied to a backup key first so the next save can't destroy it.
+  List<T> _decodeList<T>(
+    String raw,
+    String key,
+    T Function(Map<String, dynamic>) fromJson,
+  ) {
+    List<dynamic> items;
     try {
-      final list = jsonDecode(raw) as List<dynamic>;
-      return list
-          .whereType<Map<dynamic, dynamic>>()
-          .map(Map<String, dynamic>.from)
-          .map(ReminderEvent.fromJson)
-          .where((e) => e.id.isNotEmpty)
-          .toList();
-    } catch (_) {
-      return const [];
+      items = jsonDecode(raw) as List<dynamic>;
+    } catch (e) {
+      _backupCorrupt(key, raw, e);
+      return <T>[];
     }
+    final out = <T>[];
+    var failed = false;
+    for (final item in items) {
+      try {
+        out.add(fromJson(Map<String, dynamic>.from(item as Map)));
+      } catch (e) {
+        failed = true;
+        debugPrint('Skipping unreadable saved item in $key: $e');
+      }
+    }
+    if (failed) _backupCorrupt(key, raw, 'unreadable items');
+    return out;
+  }
+
+  void _backupCorrupt(String key, String raw, Object reason) {
+    final prefs = _prefs;
+    if (prefs == null) return;
+    final backupKey = '${key}_unreadable_backup';
+    if (prefs.containsKey(backupKey)) return;
+    debugPrint(
+      'Saved data in $key could not be fully read ($reason); kept a backup.',
+    );
+    unawaited(prefs.setString(backupKey, raw));
   }
 
   Future<void> _persistReminders() async {
@@ -245,11 +305,20 @@ class CloudReminderStore implements ReminderStore {
 
   @override
   Future<void> initialize() async {
-    await _userRef.set({
-      'uid': uid,
-      'updatedAt': FieldValue.serverTimestamp(),
-      'createdAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+    // Refresh the profile doc without waiting: Firestore write futures only
+    // complete once the server confirms, so awaiting this made every launch
+    // (and every background alarm action) hang while offline. `createdAt` is
+    // no longer rewritten on every sign-in.
+    unawaited(
+      _userRef
+          .set({
+            'uid': uid,
+            'updatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true))
+          .catchError((Object e) {
+            debugPrint('Profile write failed: $e');
+          }),
+    );
   }
 
   @override

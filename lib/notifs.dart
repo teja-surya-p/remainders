@@ -3,13 +3,36 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:flutter_native_timezone_updated_gradle/flutter_native_timezone.dart';
+import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:timezone/data/latest_all.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
 
 import 'reminder_sounds.dart';
+import 'scheduling/alert_payload.dart';
 
 enum AlarmPriorityLevel { low, medium, high }
+
+/// What the OS currently allows. Anything that cannot be determined is
+/// reported as not allowed, so the reliability check never over-promises.
+class NotificationPermissions {
+  final bool notificationsEnabled;
+  final bool exactAlarmsAllowed;
+
+  const NotificationPermissions({
+    required this.notificationsEnabled,
+    required this.exactAlarmsAllowed,
+  });
+
+  bool get allGranted => notificationsEnabled && exactAlarmsAllowed;
+}
+
+/// A notification the OS has scheduled but not shown yet.
+class PendingAlert {
+  final int id;
+  final AlertPayload? payload;
+
+  const PendingAlert(this.id, this.payload);
+}
 
 class Notifs {
   Notifs._();
@@ -18,14 +41,12 @@ class Notifs {
       FlutterLocalNotificationsPlugin();
   static bool _canScheduleExact = true;
   static bool _notificationsEnabled = true;
+  static bool _tzReady = false;
   static final Set<String> _createdChannelIds = <String>{};
 
-  // Track which OS permission prompts we have already shown the user this
-  // session so we don't bounce them through multiple Settings pages back to
-  // back (especially the exact-alarm + full-screen-intent prompts which are
-  // separate Settings activities, not in-app dialogs).
-  static bool _exactAlarmPrompted = false;
-  static bool _fullScreenIntentPrompted = false;
+  /// android.app.Notification.FLAG_INSISTENT: repeat the sound until the
+  /// notification is answered or removed.
+  static const int _flagInsistent = 4;
 
   static const String categoryId = 'REMINDER_CATEGORY';
   static const String _alarmLowChannelBase = 'reminders_alarm_low_v3';
@@ -57,8 +78,7 @@ class Notifs {
     DidReceiveNotificationResponseCallback? onAction,
     DidReceiveBackgroundNotificationResponseCallback? onBackgroundAction,
   }) async {
-    tzdata.initializeTimeZones();
-    await _configureTimezone();
+    await ensureTimeZone();
 
     final iosInit = DarwinInitializationSettings(
       requestAlertPermission: true,
@@ -92,10 +112,8 @@ class Notifs {
       ],
     );
 
-    // Use a monochrome alpha-only drawable for the status-bar small icon.
-    // The system renders @mipmap/ic_launcher (a colored bitmap) as a featureless
-    // grey square because it ignores all channels except alpha for the small
-    // icon position.
+    // Monochrome alpha-only drawable for the status-bar icon; a colored
+    // launcher icon renders as a grey square there.
     const androidInit = AndroidInitializationSettings('ic_stat_notification');
 
     await _p.initialize(
@@ -116,58 +134,63 @@ class Notifs {
               IOSFlutterLocalNotificationsPlugin
             >()
             ?.requestPermissions(alert: true, badge: true, sound: true);
-      } catch (_) {}
+      } catch (e) {
+        debugPrint('iOS notification permission request failed: $e');
+      }
     }
 
     if (Platform.isAndroid) {
-      final android = _p
-          .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin
-          >();
-      // Only ask for the POST_NOTIFICATIONS runtime permission on init — it's
-      // an in-app dialog. Defer SCHEDULE_EXACT_ALARM and USE_FULL_SCREEN_INTENT
-      // (each opens a separate Settings page) until the user actually creates
-      // an alarm reminder, so we never bounce them through three system
-      // screens during first launch.
-      await _refreshAndroidPermissionState(
-        android,
-        requestNotif: true,
-        requestExactAlarm: false,
-        requestFullScreenIntent: false,
-      );
+      final android = _android();
+      // Only the POST_NOTIFICATIONS dialog appears on first launch. Exact
+      // alarms and full-screen alerts open separate Settings pages, so they
+      // are requested from the UI (requestAlarmPermissions), never while the
+      // scheduler is re-arming in the background.
+      try {
+        await android?.requestNotificationsPermission();
+      } catch (e) {
+        debugPrint('Notification permission request failed: $e');
+      }
+      await _refreshAndroidPermissionState(android);
       await _createAndroidChannels(android);
     }
   }
 
+  /// Loads the time-zone database and sets the device zone. Safe to call from
+  /// any isolate, any number of times; every scheduling path calls it, so the
+  /// notification-action background isolate can schedule too.
+  static Future<void> ensureTimeZone() async {
+    if (_tzReady) return;
+    tzdata.initializeTimeZones();
+    await _configureTimezone();
+    _tzReady = true;
+  }
+
+  /// Re-reads the device zone (after travel or a manual zone change).
+  static Future<void> refreshTimeZone() async {
+    _tzReady = false;
+    await ensureTimeZone();
+  }
+
   static Future<void> _configureTimezone() async {
     try {
-      final nativeName = await FlutterNativeTimezone.getLocalTimezone().timeout(
+      final info = await FlutterTimezone.getLocalTimezone().timeout(
         const Duration(seconds: 3),
       );
-      try {
-        tz.setLocalLocation(tz.getLocation(nativeName));
-        return;
-      } catch (_) {
-        // Native name was not in the IANA database — fall through to the
-        // offset-based fallback below.
-      }
-    } catch (_) {
-      // Plugin call failed (e.g. platform channel error) — fall through.
+      tz.setLocalLocation(tz.getLocation(info.identifier));
+      return;
+    } catch (e) {
+      debugPrint('Device time zone lookup failed, using offset fallback: $e');
     }
 
-    // Best-effort fallback: derive a fixed-offset zone from the system clock
-    // so absolute scheduling stays correct even when the IANA name lookup
-    // fails. Etc/GMT zones use POSIX-inverted signs (Etc/GMT+5 is UTC-5h).
+    // Fallback: a fixed-offset zone from the system clock keeps absolute
+    // scheduling correct when the IANA name is unavailable. Etc/GMT zones use
+    // POSIX-inverted signs (Etc/GMT+5 is UTC-5h).
     try {
-      final offsetMinutes = DateTime.now().timeZoneOffset.inMinutes;
-      final hours = offsetMinutes ~/ 60;
-      if (hours == 0) {
-        tz.setLocalLocation(tz.getLocation('UTC'));
-        return;
-      }
-      final etcName = hours > 0 ? 'Etc/GMT-$hours' : 'Etc/GMT+${-hours}';
-      tz.setLocalLocation(tz.getLocation(etcName));
-      return;
+      final hours = DateTime.now().timeZoneOffset.inMinutes ~/ 60;
+      final name = hours == 0
+          ? 'UTC'
+          : (hours > 0 ? 'Etc/GMT-$hours' : 'Etc/GMT+${-hours}');
+      tz.setLocalLocation(tz.getLocation(name));
     } catch (_) {
       tz.setLocalLocation(tz.getLocation('UTC'));
     }
@@ -192,48 +215,14 @@ class Notifs {
     bool enableVibration = true,
     bool enableActions = true,
     AlarmPriorityLevel priorityLevel = AlarmPriorityLevel.medium,
+    Duration? timeoutAfter,
   }) async {
+    await ensureTimeZone();
+
     AndroidFlutterLocalNotificationsPlugin? androidPlatform;
     if (Platform.isAndroid) {
-      final android = _p
-          .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin
-          >();
-      androidPlatform = android;
-      await _refreshAndroidPermissionState(
-        android,
-        requestNotif: false,
-        requestExactAlarm: false,
-        requestFullScreenIntent: false,
-      );
-      if (android != null) {
-        // Lazily prompt for the OS-level permissions we actually need for this
-        // particular schedule, but only once per session per permission so we
-        // don't open the same Settings page repeatedly.
-        final needNotif = !_notificationsEnabled;
-        final needExact = isAlarm && !_canScheduleExact && !_exactAlarmPrompted;
-        final needFsi = isAlarm && !_fullScreenIntentPrompted;
-        if (needNotif || needExact || needFsi) {
-          await _refreshAndroidPermissionState(
-            android,
-            requestNotif: needNotif,
-            requestExactAlarm: needExact,
-            requestFullScreenIntent: needFsi,
-          );
-          if (needExact) _exactAlarmPrompted = true;
-          if (needFsi) _fullScreenIntentPrompted = true;
-        }
-      }
-      if (!_notificationsEnabled) {
-        debugPrint(
-          'Notifications are disabled at OS level. Alarm notification may not appear.',
-        );
-      }
-      if (isAlarm && !_canScheduleExact) {
-        debugPrint(
-          'Exact alarm permission is not granted. Using inexact scheduling fallback.',
-        );
-      }
+      androidPlatform = _android();
+      await _refreshAndroidPermissionState(androidPlatform);
     }
 
     final androidScheduleMode = _resolveScheduleMode(isAlarm: isAlarm);
@@ -265,18 +254,20 @@ class Notifs {
       category: isAlarm ? AndroidNotificationCategory.alarm : null,
       fullScreenIntent: isAlarm,
       audioAttributesUsage: channel.audioUsage,
+      // Alarms ring until answered: the sound repeats, the notification can't
+      // be swiped away, and it disappears on its own after [timeoutAfter].
+      ongoing: isAlarm,
+      autoCancel: !isAlarm,
+      additionalFlags: isAlarm ? Int32List.fromList([_flagInsistent]) : null,
+      timeoutAfter: timeoutAfter?.inMilliseconds,
+      visibility: isAlarm ? NotificationVisibility.public : null,
       actions: enableActions
           ? <AndroidNotificationAction>[
               const AndroidNotificationAction(aSnooze5, '5m'),
               const AndroidNotificationAction(aSnooze10, '10m'),
               const AndroidNotificationAction(aSnooze30, '30m'),
-              // Inline RemoteInput lets the user type a custom snooze duration
-              // (minutes) directly from the notification, even when the app is
-              // killed. Without inputs, the background isolate has no way to
-              // know what duration to apply and the action would silently
-              // do nothing. `showsUserInterface: true` is the fallback for
-              // taps without input — it brings the app to the foreground so
-              // SnoozeScreen can collect the value.
+              // Inline RemoteInput lets the user type a custom snooze even
+              // when the app is closed; tapping without input opens the app.
               const AndroidNotificationAction(
                 aCustom,
                 'Custom',
@@ -299,28 +290,27 @@ class Notifs {
       categoryIdentifier: enableActions ? categoryId : null,
     );
 
+    final details = NotificationDetails(android: android, iOS: ios);
     try {
       await _zonedSchedule(
         id: id,
         title: title,
         body: body,
         whenLocal: whenLocal,
-        details: NotificationDetails(android: android, iOS: ios),
+        details: details,
         androidScheduleMode: androidScheduleMode,
         payload: payload,
       );
     } catch (e) {
       if (Platform.isAndroid &&
           androidScheduleMode != AndroidScheduleMode.inexactAllowWhileIdle) {
-        debugPrint(
-          'Primary schedule failed for notification $id. Retrying with inexact mode. Error: $e',
-        );
+        debugPrint('Exact schedule failed for $id, retrying inexact: $e');
         await _zonedSchedule(
           id: id,
           title: title,
           body: body,
           whenLocal: whenLocal,
-          details: NotificationDetails(android: android, iOS: ios),
+          details: details,
           androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
           payload: payload,
         );
@@ -332,17 +322,86 @@ class Notifs {
 
   static Future<void> cancel(int id) => _p.cancel(id: id);
 
-  static AndroidScheduleMode _resolveScheduleMode({required bool isAlarm}) {
-    if (isAlarm) {
-      if (!_canScheduleExact) {
-        return AndroidScheduleMode.inexactAllowWhileIdle;
+  static Future<void> cancelAll() => _p.cancelAll();
+
+  /// Everything scheduled but not yet shown.
+  static Future<List<PendingAlert>> pendingAlerts() async {
+    final requests = await _p.pendingNotificationRequests();
+    return [
+      for (final r in requests)
+        PendingAlert(r.id, AlertPayload.decode(r.payload)),
+    ];
+  }
+
+  /// IDs of notifications currently on screen (e.g. an alarm still ringing).
+  static Future<Set<int>> activeIds() async {
+    final active = await _p.getActiveNotifications();
+    return {
+      for (final n in active)
+        if (n.id != null) n.id!,
+    };
+  }
+
+  /// Fresh permission state, for the reliability check and setup screens.
+  static Future<NotificationPermissions> permissions() async {
+    if (!Platform.isAndroid) {
+      return const NotificationPermissions(
+        notificationsEnabled: true,
+        exactAlarmsAllowed: true,
+      );
+    }
+    final android = _android();
+    var notificationsEnabled = false;
+    var exactAllowed = false;
+    try {
+      notificationsEnabled = await android?.areNotificationsEnabled() ?? false;
+    } catch (e) {
+      debugPrint('areNotificationsEnabled failed: $e');
+    }
+    try {
+      // null means the check doesn't apply (Android < 12): exact is allowed.
+      exactAllowed = await android?.canScheduleExactNotifications() ?? true;
+    } catch (e) {
+      debugPrint('canScheduleExactNotifications failed: $e');
+    }
+    return NotificationPermissions(
+      notificationsEnabled: notificationsEnabled,
+      exactAlarmsAllowed: exactAllowed,
+    );
+  }
+
+  /// Asks for what alarms need. Call from the UI (it opens Settings pages
+  /// for exact alarms and full-screen alerts), never from background work.
+  static Future<NotificationPermissions> requestAlarmPermissions() async {
+    if (Platform.isAndroid) {
+      final android = _android();
+      final current = await permissions();
+      try {
+        if (!current.notificationsEnabled) {
+          await android?.requestNotificationsPermission();
+        }
+        if (!current.exactAlarmsAllowed) {
+          await android?.requestExactAlarmsPermission();
+        }
+        await android?.requestFullScreenIntentPermission();
+      } catch (e) {
+        debugPrint('Alarm permission request failed: $e');
       }
-      return AndroidScheduleMode.alarmClock;
+      await _refreshAndroidPermissionState(android);
     }
-    if (!_canScheduleExact) {
-      return AndroidScheduleMode.inexactAllowWhileIdle;
-    }
-    return AndroidScheduleMode.exactAllowWhileIdle;
+    return permissions();
+  }
+
+  static AndroidFlutterLocalNotificationsPlugin? _android() => _p
+      .resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin
+      >();
+
+  static AndroidScheduleMode _resolveScheduleMode({required bool isAlarm}) {
+    if (!_canScheduleExact) return AndroidScheduleMode.inexactAllowWhileIdle;
+    return isAlarm
+        ? AndroidScheduleMode.alarmClock
+        : AndroidScheduleMode.exactAllowWhileIdle;
   }
 
   static _ChannelConfig _resolveChannelConfig({
@@ -394,16 +453,11 @@ class Notifs {
     );
   }
 
-  static String _priorityLabel(AlarmPriorityLevel level) {
-    switch (level) {
-      case AlarmPriorityLevel.low:
-        return 'Low';
-      case AlarmPriorityLevel.medium:
-        return 'Medium';
-      case AlarmPriorityLevel.high:
-        return 'High';
-    }
-  }
+  static String _priorityLabel(AlarmPriorityLevel level) => switch (level) {
+    AlarmPriorityLevel.low => 'Low',
+    AlarmPriorityLevel.medium => 'Medium',
+    AlarmPriorityLevel.high => 'High',
+  };
 
   static Future<void> _ensureAndroidChannel(
     AndroidFlutterLocalNotificationsPlugin? android,
@@ -414,7 +468,9 @@ class Notifs {
     try {
       await android.createNotificationChannel(channel.toAndroidChannel());
       _createdChannelIds.add(channel.id);
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('Creating notification channel ${channel.id} failed: $e');
+    }
   }
 
   static Future<void> _zonedSchedule({
@@ -426,52 +482,37 @@ class Notifs {
     required AndroidScheduleMode androidScheduleMode,
     required String? payload,
   }) async {
-    final scheduledAt = tz.TZDateTime.from(whenLocal, tz.local);
+    await ensureTimeZone();
     await _p.zonedSchedule(
       id: id,
       title: title,
       body: body,
-      scheduledDate: scheduledAt,
+      scheduledDate: tz.TZDateTime.from(whenLocal, tz.local),
       notificationDetails: details,
       androidScheduleMode: androidScheduleMode,
       payload: payload,
     );
   }
 
+  /// Caches what scheduling needs to pick a mode. Unknown values stay
+  /// permissive here because a failed exact schedule falls back to inexact;
+  /// [permissions] reports them honestly instead.
   static Future<void> _refreshAndroidPermissionState(
-    AndroidFlutterLocalNotificationsPlugin? android, {
-    required bool requestNotif,
-    required bool requestExactAlarm,
-    required bool requestFullScreenIntent,
-  }) async {
+    AndroidFlutterLocalNotificationsPlugin? android,
+  ) async {
     if (android == null) return;
-
-    if (requestNotif) {
-      try {
-        await android.requestNotificationsPermission();
-      } catch (_) {}
-    }
-    if (requestExactAlarm) {
-      try {
-        await android.requestExactAlarmsPermission();
-      } catch (_) {}
-    }
-    if (requestFullScreenIntent) {
-      try {
-        await android.requestFullScreenIntentPermission();
-      } catch (_) {}
-    }
-
     try {
       _notificationsEnabled = await android.areNotificationsEnabled() ?? true;
     } catch (_) {
       _notificationsEnabled = true;
     }
-
     try {
       _canScheduleExact = await android.canScheduleExactNotifications() ?? true;
     } catch (_) {
       _canScheduleExact = true;
+    }
+    if (!_notificationsEnabled) {
+      debugPrint('Notifications are disabled at OS level.');
     }
   }
 
@@ -480,33 +521,17 @@ class Notifs {
   ) async {
     if (android == null) return;
     await _ensureAndroidChannel(android, _silentConfig);
-    await _ensureAndroidChannel(
-      android,
-      _resolveChannelConfig(
-        isAlarm: true,
-        playSound: true,
-        priorityLevel: AlarmPriorityLevel.low,
-        alarmSoundId: ReminderSounds.defaultAlarmSoundId,
-      ),
-    );
-    await _ensureAndroidChannel(
-      android,
-      _resolveChannelConfig(
-        isAlarm: true,
-        playSound: true,
-        priorityLevel: AlarmPriorityLevel.medium,
-        alarmSoundId: ReminderSounds.defaultAlarmSoundId,
-      ),
-    );
-    await _ensureAndroidChannel(
-      android,
-      _resolveChannelConfig(
-        isAlarm: true,
-        playSound: true,
-        priorityLevel: AlarmPriorityLevel.high,
-        alarmSoundId: ReminderSounds.defaultAlarmSoundId,
-      ),
-    );
+    for (final level in AlarmPriorityLevel.values) {
+      await _ensureAndroidChannel(
+        android,
+        _resolveChannelConfig(
+          isAlarm: true,
+          playSound: true,
+          priorityLevel: level,
+          alarmSoundId: ReminderSounds.defaultAlarmSoundId,
+        ),
+      );
+    }
     await _ensureAndroidChannel(
       android,
       _resolveChannelConfig(

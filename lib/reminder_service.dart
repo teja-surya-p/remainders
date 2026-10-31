@@ -7,6 +7,7 @@ import 'reminder_model.dart';
 import 'reminder_sounds.dart';
 import 'reminder_store.dart';
 import 'repeat_utils.dart';
+import 'scheduling/alert_payload.dart';
 import 'subscription_service.dart';
 
 class PremiumRequiredException implements Exception {
@@ -306,6 +307,16 @@ class ReminderService {
     return count;
   }
 
+  /// Picks up changes another isolate saved (see LocalReminderStore.reload).
+  Future<void> reloadLocal() async {
+    await _local?.reload();
+  }
+
+  Future<List<ReminderModel>> listReminders() async {
+    _requireSignedIn();
+    return _activeStoreOrThrow().listReminders();
+  }
+
   Future<ReminderModel?> getReminder(String id) async {
     return _activeStoreOrThrow().getReminder(id);
   }
@@ -431,15 +442,21 @@ class ReminderService {
     }
   }
 
+  /// [expectedDueAt] is the occurrence the user is answering (from the alarm
+  /// payload). If the reminder already moved past it — the same alarm
+  /// answered twice, e.g. from the notification and the alarm screen — the
+  /// call does nothing.
   Future<void> snoozeReminder(
     String reminderId,
     DateTime newDueAt, {
     String? platform,
+    DateTime? expectedDueAt,
   }) async {
     _requireSignedIn();
 
     final reminder = await _activeStoreOrThrow().getReminder(reminderId);
     if (reminder == null) return;
+    if (_alreadyAnswered(reminder, expectedDueAt)) return;
 
     final now = DateTime.now();
     final snoozeMinutes = newDueAt.difference(now).inMinutes;
@@ -471,15 +488,23 @@ class ReminderService {
     await _recomputeSuggestion(reminderId);
   }
 
-  Future<void> dismissReminder(String reminderId) async {
-    await completeReminder(reminderId);
+  Future<void> dismissReminder(
+    String reminderId, {
+    DateTime? expectedDueAt,
+  }) async {
+    await completeReminder(reminderId, expectedDueAt: expectedDueAt);
   }
 
-  Future<void> completeReminder(String reminderId) async {
+  /// See [snoozeReminder] for [expectedDueAt].
+  Future<void> completeReminder(
+    String reminderId, {
+    DateTime? expectedDueAt,
+  }) async {
     _requireSignedIn();
 
     final reminder = await _activeStoreOrThrow().getReminder(reminderId);
     if (reminder == null) return;
+    if (_alreadyAnswered(reminder, expectedDueAt)) return;
 
     final now = DateTime.now();
     final scheduledAt = reminder.dueAt;
@@ -648,38 +673,6 @@ class ReminderService {
     );
 
     await _writeReminder(updated);
-  }
-
-  Future<void> setNotificationIds(
-    String reminderId, {
-    int? mainId,
-    int? preId,
-    bool clearMain = false,
-    bool clearPre = false,
-  }) async {
-    final reminder = await _activeStoreOrThrow().getReminder(reminderId);
-    if (reminder == null) return;
-
-    final nextMainId = clearMain ? null : (mainId ?? reminder.notifIdMain);
-    final nextPreId = clearPre ? null : (preId ?? reminder.notifIdPre);
-    final unchanged =
-        reminder.notifIdMain == nextMainId && reminder.notifIdPre == nextPreId;
-    if (unchanged) {
-      return;
-    }
-
-    final updated = reminder.copyWith(
-      notifIdMain: mainId,
-      notifIdPre: preId,
-      clearNotifIdMain: clearMain,
-      clearNotifIdPre: clearPre,
-      updatedAt: DateTime.now(),
-    );
-    await _writeReminder(updated);
-  }
-
-  Future<void> clearNotificationsForReminder(String reminderId) async {
-    await setNotificationIds(reminderId, clearMain: true, clearPre: true);
   }
 
   Future<void> applySuggestion(String reminderId) async {
@@ -1135,6 +1128,11 @@ class ReminderService {
     if (_cloudSyncEnabled) {
       await _local?.upsertEvent(event);
     }
+  }
+
+  bool _alreadyAnswered(ReminderModel reminder, DateTime? expectedDueAt) {
+    if (expectedDueAt == null) return false;
+    return !reminder.isActive || !sameMinute(reminder.dueAt, expectedDueAt);
   }
 
   ReminderStore _activeStoreOrThrow() {

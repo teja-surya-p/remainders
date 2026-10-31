@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -7,14 +8,20 @@ import '../alarm_player.dart';
 import '../alarm_vibration.dart';
 import '../app_services.dart';
 import '../components/common/app_ui.dart';
+import '../platform/lock_screen.dart';
 import '../reminder_model.dart';
+import '../reminder_scheduler.dart';
 import '../theme/app_motion.dart';
 import '../theme/app_tokens.dart';
 
 class AlarmScreen extends StatefulWidget {
   final String reminderId;
 
-  const AlarmScreen({super.key, required this.reminderId});
+  /// The occurrence that is ringing (from the alarm payload). Used so the
+  /// same alarm can't be answered twice.
+  final DateTime? occurrence;
+
+  const AlarmScreen({super.key, required this.reminderId, this.occurrence});
 
   @override
   State<AlarmScreen> createState() => _AlarmScreenState();
@@ -26,6 +33,7 @@ class _AlarmScreenState extends State<AlarmScreen>
   DateTime? _exactSnoozeAt;
   bool _processing = false;
   bool _showCustom = false;
+  Timer? _ringTimeout;
 
   late final AnimationController _pulse = AnimationController(
     vsync: this,
@@ -41,6 +49,7 @@ class _AlarmScreenState extends State<AlarmScreen>
   void initState() {
     super.initState();
     _startAlarmMedia();
+    _ringTimeout = Timer(_remainingRingTime(), _onRingTimeout);
 
     Future<void>.delayed(const Duration(seconds: 1), () async {
       while (mounted) {
@@ -63,12 +72,45 @@ class _AlarmScreenState extends State<AlarmScreen>
     await AlarmVibration.start();
   }
 
+  /// Time left in this occurrence's ring window (at least a minute).
+  Duration _remainingRingTime() {
+    final window = ReminderScheduler.config.ringWindow;
+    final occurrence = widget.occurrence;
+    if (occurrence == null) return window;
+    final left = occurrence.add(window).difference(DateTime.now());
+    return left < const Duration(minutes: 1)
+        ? const Duration(minutes: 1)
+        : left;
+  }
+
+  /// Nobody answered within the ring window: stop ringing and close. The
+  /// reminder stays due, and the scheduler records the miss.
+  Future<void> _onRingTimeout() async {
+    if (_processing || !mounted) return;
+    await _silence();
+    if (mounted) Navigator.pop(context);
+  }
+
+  Future<void> _silence() async {
+    _ringTimeout?.cancel();
+    await AlarmPlayer.stop();
+    await AlarmVibration.stop();
+  }
+
   Future<void> _stop() async {
     if (_processing) return;
     setState(() => _processing = true);
-    await AppServices.reminders.completeReminder(widget.reminderId);
-    await AlarmPlayer.stop();
-    await AlarmVibration.stop();
+    // Silence first: the user answered, whatever the save below does.
+    await _silence();
+    try {
+      await AppServices.reminders.completeReminder(
+        widget.reminderId,
+        expectedDueAt: widget.occurrence,
+      );
+    } catch (e) {
+      // The reminder stays due, so it rings again rather than being lost.
+      debugPrint('Completing reminder failed: $e');
+    }
     if (mounted) Navigator.pop(context);
   }
 
@@ -134,12 +176,17 @@ class _AlarmScreenState extends State<AlarmScreen>
   Future<void> _applySnooze(DateTime dueAt) async {
     if (_processing) return;
     setState(() => _processing = true);
+    await _silence();
     try {
-      await AppServices.reminders.snoozeReminder(widget.reminderId, dueAt);
-      await AlarmPlayer.stop();
-      await AlarmVibration.stop();
+      await AppServices.reminders.snoozeReminder(
+        widget.reminderId,
+        dueAt,
+        expectedDueAt: widget.occurrence,
+      );
       if (mounted) Navigator.pop(context);
     } catch (e) {
+      // Snooze didn't save, so nothing would ring later: ring again now.
+      await _startAlarmMedia();
       if (!mounted) return;
       setState(() => _processing = false);
       ScaffoldMessenger.of(
@@ -153,8 +200,10 @@ class _AlarmScreenState extends State<AlarmScreen>
     _customMinutes.dispose();
     _pulse.dispose();
     _shake.dispose();
-    AlarmPlayer.stop();
-    AlarmVibration.stop();
+    _ringTimeout?.cancel();
+    unawaited(AlarmPlayer.stop());
+    unawaited(AlarmVibration.stop());
+    unawaited(LockScreen.release());
     super.dispose();
   }
 
@@ -163,264 +212,275 @@ class _AlarmScreenState extends State<AlarmScreen>
     final cs = Theme.of(context).colorScheme;
     final tone = AppTone.of(context);
 
-    return Scaffold(
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [
-              cs.error.withValues(alpha: 0.22),
-              Theme.of(context).scaffoldBackgroundColor,
-            ],
+    return PopScope(
+      // A ringing alarm must be answered (snooze or dismiss), not backed out of.
+      canPop: false,
+      child: Scaffold(
+        body: Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                cs.error.withValues(alpha: 0.22),
+                Theme.of(context).scaffoldBackgroundColor,
+              ],
+            ),
           ),
-        ),
-        child: SafeArea(
-          child: Center(
-            child: StreamBuilder<List<ReminderModel>>(
-              stream: AppServices.reminders.watchReminders(),
-              builder: (context, snapshot) {
-                final reminder = snapshot.data
-                    ?.where((r) => r.id == widget.reminderId)
-                    .firstOrNull;
-                final title = reminder?.title ?? 'Reminder';
-                final snoozeCount = reminder?.consecutiveSnoozes ?? 0;
-                final exactLabel = _exactSnoozeAt == null
-                    ? 'Pick exact date & time'
-                    : DateFormat('EEE, MMM d • h:mm a').format(_exactSnoozeAt!);
+          child: SafeArea(
+            child: Center(
+              child: StreamBuilder<List<ReminderModel>>(
+                stream: AppServices.reminders.watchReminders(),
+                builder: (context, snapshot) {
+                  final reminder = snapshot.data
+                      ?.where((r) => r.id == widget.reminderId)
+                      .firstOrNull;
+                  final title = reminder?.title ?? 'Reminder';
+                  final snoozeCount = reminder?.consecutiveSnoozes ?? 0;
+                  final exactLabel = _exactSnoozeAt == null
+                      ? 'Pick exact date & time'
+                      : DateFormat(
+                          'EEE, MMM d • h:mm a',
+                        ).format(_exactSnoozeAt!);
 
-                return ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 560),
-                  child: ListView(
-                    padding: const EdgeInsets.fromLTRB(20, 22, 20, 20),
-                    children: [
-                      Center(
-                        child: SizedBox(
-                          width: 180,
-                          height: 180,
-                          child: Stack(
-                            alignment: Alignment.center,
-                            children: [
-                              AnimatedBuilder(
-                                animation: _pulse,
-                                builder: (context, child) {
-                                  final t = _pulse.value;
-                                  return CustomPaint(
-                                    painter: _PulsePainter(
-                                      progress: t,
-                                      color: cs.primary,
-                                    ),
-                                    child: const SizedBox.expand(),
-                                  );
-                                },
-                              ),
-                              AnimatedBuilder(
-                                animation: _shake,
-                                builder: (context, child) {
-                                  final angle =
-                                      math.sin(_shake.value * math.pi * 8) *
-                                      0.06;
-                                  return Transform.rotate(
-                                    angle: angle,
-                                    child: Container(
-                                      width: 92,
-                                      height: 92,
-                                      decoration: BoxDecoration(
+                  return ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 560),
+                    child: ListView(
+                      padding: const EdgeInsets.fromLTRB(20, 22, 20, 20),
+                      children: [
+                        Center(
+                          child: SizedBox(
+                            width: 180,
+                            height: 180,
+                            child: Stack(
+                              alignment: Alignment.center,
+                              children: [
+                                AnimatedBuilder(
+                                  animation: _pulse,
+                                  builder: (context, child) {
+                                    final t = _pulse.value;
+                                    return CustomPaint(
+                                      painter: _PulsePainter(
+                                        progress: t,
                                         color: cs.primary,
-                                        shape: BoxShape.circle,
-                                        boxShadow: [
-                                          BoxShadow(
-                                            color: cs.primary.withValues(
-                                              alpha: 0.35,
+                                      ),
+                                      child: const SizedBox.expand(),
+                                    );
+                                  },
+                                ),
+                                AnimatedBuilder(
+                                  animation: _shake,
+                                  builder: (context, child) {
+                                    final angle =
+                                        math.sin(_shake.value * math.pi * 8) *
+                                        0.06;
+                                    return Transform.rotate(
+                                      angle: angle,
+                                      child: Container(
+                                        width: 92,
+                                        height: 92,
+                                        decoration: BoxDecoration(
+                                          color: cs.primary,
+                                          shape: BoxShape.circle,
+                                          boxShadow: [
+                                            BoxShadow(
+                                              color: cs.primary.withValues(
+                                                alpha: 0.35,
+                                              ),
+                                              blurRadius: 22,
+                                              offset: const Offset(0, 10),
                                             ),
-                                            blurRadius: 22,
-                                            offset: const Offset(0, 10),
-                                          ),
-                                        ],
+                                          ],
+                                        ),
+                                        alignment: Alignment.center,
+                                        child: Icon(
+                                          Icons.alarm_rounded,
+                                          color: cs.onPrimary,
+                                          size: 42,
+                                        ),
                                       ),
-                                      alignment: Alignment.center,
-                                      child: Icon(
-                                        Icons.alarm_rounded,
-                                        color: cs.onPrimary,
-                                        size: 42,
-                                      ),
-                                    ),
-                                  );
-                                },
-                              ),
-                            ],
+                                    );
+                                  },
+                                ),
+                              ],
+                            ),
                           ),
                         ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        title,
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.headlineSmall
-                            ?.copyWith(fontWeight: FontWeight.w800),
-                      ),
-                      if ((reminder?.description ?? '').trim().isNotEmpty) ...[
-                        const SizedBox(height: 4),
-                        Text(
-                          reminder!.description!,
-                          textAlign: TextAlign.center,
-                          style: Theme.of(context).textTheme.bodyMedium
-                              ?.copyWith(color: tone.mutedText),
-                        ),
-                      ],
-                      const SizedBox(height: 6),
-                      Center(
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 6,
-                          ),
-                          decoration: BoxDecoration(
-                            color: cs.secondary.withValues(alpha: 0.72),
-                            borderRadius: BorderRadius.circular(99),
-                          ),
-                          child: Text(
-                            DateFormat(
-                              'h:mm a',
-                            ).format(reminder?.dueAt ?? DateTime.now()),
-                            style: Theme.of(context).textTheme.titleSmall,
-                          ),
-                        ),
-                      ),
-                      if (snoozeCount > 0) ...[
                         const SizedBox(height: 8),
+                        Text(
+                          title,
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.headlineSmall
+                              ?.copyWith(fontWeight: FontWeight.w800),
+                        ),
+                        if ((reminder?.description ?? '')
+                            .trim()
+                            .isNotEmpty) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            reminder!.description!,
+                            textAlign: TextAlign.center,
+                            style: Theme.of(context).textTheme.bodyMedium
+                                ?.copyWith(color: tone.mutedText),
+                          ),
+                        ],
+                        const SizedBox(height: 6),
                         Center(
                           child: Container(
                             padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
+                              horizontal: 12,
                               vertical: 6,
                             ),
                             decoration: BoxDecoration(
-                              color: tone.warning.withValues(alpha: 0.14),
+                              color: cs.secondary.withValues(alpha: 0.72),
                               borderRadius: BorderRadius.circular(99),
                             ),
                             child: Text(
-                              'Snoozed $snoozeCount times',
-                              style: Theme.of(context).textTheme.labelMedium
-                                  ?.copyWith(
-                                    color: tone.warning,
-                                    fontWeight: FontWeight.w700,
-                                  ),
+                              DateFormat(
+                                'h:mm a',
+                              ).format(reminder?.dueAt ?? DateTime.now()),
+                              style: Theme.of(context).textTheme.titleSmall,
                             ),
                           ),
                         ),
-                      ],
-                      const SizedBox(height: 18),
-                      Text(
-                        'Snooze for',
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.labelMedium
-                            ?.copyWith(color: tone.mutedText),
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _ActionButton(
-                              label: '5 min',
-                              onTap: _processing
-                                  ? null
-                                  : () => _snoozeBy(const Duration(minutes: 5)),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: _ActionButton(
-                              label: '10 min',
-                              onTap: _processing
-                                  ? null
-                                  : () =>
-                                        _snoozeBy(const Duration(minutes: 10)),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _ActionButton(
-                              label: '30 min',
-                              onTap: _processing
-                                  ? null
-                                  : () =>
-                                        _snoozeBy(const Duration(minutes: 30)),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: _ActionButton(
-                              label: _showCustom ? 'Hide custom' : 'Custom',
-                              onTap: _processing
-                                  ? null
-                                  : () => setState(
-                                      () => _showCustom = !_showCustom,
+                        if (snoozeCount > 0) ...[
+                          const SizedBox(height: 8),
+                          Center(
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 6,
+                              ),
+                              decoration: BoxDecoration(
+                                color: tone.warning.withValues(alpha: 0.14),
+                                borderRadius: BorderRadius.circular(99),
+                              ),
+                              child: Text(
+                                'Snoozed $snoozeCount times',
+                                style: Theme.of(context).textTheme.labelMedium
+                                    ?.copyWith(
+                                      color: tone.warning,
+                                      fontWeight: FontWeight.w700,
                                     ),
+                              ),
                             ),
                           ),
                         ],
-                      ),
-                      AnimatedSize(
-                        duration: AppMotion.card,
-                        curve: AppMotion.standard,
-                        child: !_showCustom
-                            ? const SizedBox.shrink()
-                            : Padding(
-                                padding: const EdgeInsets.only(top: 8),
-                                child: Row(
-                                  children: [
-                                    Expanded(
-                                      child: TextField(
-                                        controller: _customMinutes,
-                                        keyboardType: TextInputType.number,
-                                        decoration: const InputDecoration(
-                                          hintText: 'Custom minutes',
+                        const SizedBox(height: 18),
+                        Text(
+                          'Snooze for',
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.labelMedium
+                              ?.copyWith(color: tone.mutedText),
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _ActionButton(
+                                label: '5 min',
+                                onTap: _processing
+                                    ? null
+                                    : () =>
+                                          _snoozeBy(const Duration(minutes: 5)),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: _ActionButton(
+                                label: '10 min',
+                                onTap: _processing
+                                    ? null
+                                    : () => _snoozeBy(
+                                        const Duration(minutes: 10),
+                                      ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _ActionButton(
+                                label: '30 min',
+                                onTap: _processing
+                                    ? null
+                                    : () => _snoozeBy(
+                                        const Duration(minutes: 30),
+                                      ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: _ActionButton(
+                                label: _showCustom ? 'Hide custom' : 'Custom',
+                                onTap: _processing
+                                    ? null
+                                    : () => setState(
+                                        () => _showCustom = !_showCustom,
+                                      ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        AnimatedSize(
+                          duration: AppMotion.card,
+                          curve: AppMotion.standard,
+                          child: !_showCustom
+                              ? const SizedBox.shrink()
+                              : Padding(
+                                  padding: const EdgeInsets.only(top: 8),
+                                  child: Row(
+                                    children: [
+                                      Expanded(
+                                        child: TextField(
+                                          controller: _customMinutes,
+                                          keyboardType: TextInputType.number,
+                                          decoration: const InputDecoration(
+                                            hintText: 'Custom minutes',
+                                          ),
                                         ),
                                       ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    FilledButton(
-                                      onPressed: _processing
-                                          ? null
-                                          : _snoozeCustomMinutes,
-                                      child: const Text('Snooze'),
-                                    ),
-                                  ],
+                                      const SizedBox(width: 8),
+                                      FilledButton(
+                                        onPressed: _processing
+                                            ? null
+                                            : _snoozeCustomMinutes,
+                                        child: const Text('Snooze'),
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                              ),
-                      ),
-                      const SizedBox(height: 8),
-                      _ActionButton(
-                        label: exactLabel,
-                        icon: Icons.event_rounded,
-                        onTap: _processing ? null : _pickExactDateTime,
-                      ),
-                      const SizedBox(height: 8),
-                      FilledButton.tonal(
-                        onPressed: _processing || _exactSnoozeAt == null
-                            ? null
-                            : _snoozeExact,
-                        child: const Text('Snooze to selected date & time'),
-                      ),
-                      const SizedBox(height: 14),
-                      FilledButton.icon(
-                        onPressed: _processing ? null : _stop,
-                        style: FilledButton.styleFrom(
-                          backgroundColor: cs.error,
-                          foregroundColor: cs.onError,
                         ),
-                        icon: const Icon(Icons.stop_rounded),
-                        label: const Text('Dismiss Alarm'),
-                      ),
-                    ],
-                  ),
-                );
-              },
+                        const SizedBox(height: 8),
+                        _ActionButton(
+                          label: exactLabel,
+                          icon: Icons.event_rounded,
+                          onTap: _processing ? null : _pickExactDateTime,
+                        ),
+                        const SizedBox(height: 8),
+                        FilledButton.tonal(
+                          onPressed: _processing || _exactSnoozeAt == null
+                              ? null
+                              : _snoozeExact,
+                          child: const Text('Snooze to selected date & time'),
+                        ),
+                        const SizedBox(height: 14),
+                        FilledButton.icon(
+                          onPressed: _processing ? null : _stop,
+                          style: FilledButton.styleFrom(
+                            backgroundColor: cs.error,
+                            foregroundColor: cs.onError,
+                          ),
+                          icon: const Icon(Icons.stop_rounded),
+                          label: const Text('Dismiss Alarm'),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
             ),
           ),
         ),

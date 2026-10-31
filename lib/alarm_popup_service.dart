@@ -2,16 +2,20 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import 'alarm_ui.dart';
 import 'notifs.dart';
-import 'pages/alarm_screen.dart';
 import 'reminder_model.dart';
+import 'reminder_scheduler.dart';
 import 'reminder_service.dart';
 
 class AlarmPopupService {
   AlarmPopupService._();
 
   static const Duration _tick = Duration(seconds: 1);
-  static const Duration _triggerWindow = Duration(minutes: 2);
+
+  /// Same window the scheduler rings for: an alarm still unanswered within
+  /// it is shown when the app is opened.
+  static final Duration _triggerWindow = ReminderScheduler.config.ringWindow;
   static const Duration _leadTolerance = Duration(seconds: 2);
 
   static ReminderService? _service;
@@ -89,28 +93,19 @@ class AlarmPopupService {
 
         final occurrenceKey = '${reminder.id}:${dueAt.millisecondsSinceEpoch}';
         if (_shownOccurrences.contains(occurrenceKey)) continue;
+        if (AlarmUi.isShowing(reminder.id)) continue;
 
         _shownOccurrences.add(occurrenceKey);
         _activeOccurrence = occurrenceKey;
 
-        final mainId = reminder.notifIdMain;
-        if (mainId != null) {
-          await Notifs.cancel(mainId);
-        }
-
         unawaited(
-          nav
-              .push(
-                MaterialPageRoute<void>(
-                  builder: (_) => AlarmScreen(reminderId: reminder.id),
-                  fullscreenDialog: true,
-                ),
-              )
-              .whenComplete(() {
-                if (_activeOccurrence == occurrenceKey) {
-                  _activeOccurrence = null;
-                }
-              }),
+          AlarmUi.show(reminderId: reminder.id, occurrence: dueAt).whenComplete(
+            () {
+              if (_activeOccurrence == occurrenceKey) {
+                _activeOccurrence = null;
+              }
+            },
+          ),
         );
         break;
       }

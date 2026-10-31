@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Release builds shrink unused resources. The alarm sounds and the status-bar
+     icon are referenced only from Dart by name, so keep them explicitly or
+     notifications fail silently in the version users install. -->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@raw/*,@drawable/ic_stat_notification" />

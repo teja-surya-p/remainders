@@ -1,68 +1,78 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+
+import 'alarm_ui.dart';
 import 'notifs.dart';
 import 'reminder_model.dart';
 import 'reminder_service.dart';
+import 'scheduling/alert_payload.dart';
+import 'scheduling/schedule_planner.dart';
 
+/// Keeps the OS's scheduled notifications in line with the reminders.
+///
+/// Every sync plans each reminder (see [planReminder]), then reconciles with
+/// what the OS has pending: stale alerts are cancelled, missing or changed
+/// ones are posted, and alerts already on screen are left alone. Notification
+/// IDs are derived from reminder + occurrence, so syncing is idempotent and
+/// nothing is written back to the store while scheduling.
 class ReminderScheduler {
   ReminderScheduler._();
 
-  static const Duration _leadTime = Duration(minutes: 30);
-  static const Duration _pastDueGrace = Duration(minutes: 2);
-  static const int _maxNotifId = 2147483647;
+  static const PlannerConfig config = PlannerConfig();
 
   static ReminderService? _service;
   static StreamSubscription<List<ReminderModel>>? _sub;
-  static final Map<String, _ScheduleSnapshot> _scheduled =
-      <String, _ScheduleSnapshot>{};
   static Future<void> _queue = Future<void>.value();
+
+  /// Signature of each alert this isolate posted, by notification ID, so an
+  /// unchanged alert isn't re-posted on every data change.
+  static final Map<int, String> _posted = <int, String>{};
 
   static void configure(ReminderService service) {
     _service = service;
   }
 
   static Future<void> start() async {
-    final service = _service;
-    if (service == null) {
-      throw StateError('ReminderScheduler not configured.');
-    }
-
+    final service = _requireService();
     await _sub?.cancel();
     _sub = service.watchReminders().listen((items) {
-      _queue = _queue.then((_) => _handleItems(service, items));
-      unawaited(_queue);
+      _enqueue(() => _sync(service, items));
     });
   }
 
-  /// Synchronously (re)schedules native notifications for a single reminder
-  /// without requiring [start] / a live stream subscription.
-  ///
-  /// This is the entry point used by the notification background isolate
-  /// after a snooze or dismiss action: the isolate has no live
-  /// [ReminderService] stream listener, so writing to Firestore alone would
-  /// never trigger a re-schedule. Calling this method directly guarantees
-  /// the next notification fires at the new dueAt before the isolate exits.
-  static Future<void> scheduleOne(
-    ReminderService service,
-    ReminderModel reminder,
-  ) async {
-    await _handleReminder(service, reminder);
+  /// Re-plans every reminder from the store and re-posts every alert. Used on
+  /// app resume and by the background re-arm job (reboot, time or time-zone
+  /// change, periodic check), which may run after the OS dropped alarms.
+  static Future<void> rearmNow() {
+    final service = _requireService();
+    final done = Completer<void>();
+    _enqueue(() async {
+      try {
+        _posted.clear();
+        await Notifs.refreshTimeZone();
+        await _sync(service, await service.listReminders());
+      } finally {
+        done.complete();
+      }
+    });
+    return done.future;
   }
 
-  /// Cancels every native notification owned by a reminder.
-  /// Used by the background isolate after a dismiss action so the user does
-  /// not see the alarm fire again on the original schedule.
-  static Future<void> cancelAllFor(ReminderModel reminder) async {
-    final snapshot = _scheduled.remove(reminder.id);
-    final ids = <int>{
-      if (reminder.notifIdMain != null) reminder.notifIdMain!,
-      if (reminder.notifIdPre != null) reminder.notifIdPre!,
-      if (snapshot != null) snapshot.mainId,
-      if (snapshot?.preId != null) snapshot!.preId!,
-      if (snapshot?.secondaryId != null) snapshot!.secondaryId!,
-    };
-    for (final id in ids) {
-      await Notifs.cancel(id);
+  /// Re-plans one reminder and reconciles only its own alerts. Used by the
+  /// notification-action background isolate, which has no live stream.
+  static Future<void> replanOne(ReminderModel reminder) {
+    final service = _requireService();
+    return _sync(service, [reminder], onlyReminderIds: {reminder.id});
+  }
+
+  /// Cancels every pending alert of a reminder that no longer exists.
+  static Future<void> cancelReminder(String reminderId) async {
+    for (final pending in await Notifs.pendingAlerts()) {
+      if (pending.payload?.reminderId == reminderId) {
+        await Notifs.cancel(pending.id);
+        _posted.remove(pending.id);
+      }
     }
   }
 
@@ -70,296 +80,154 @@ class ReminderScheduler {
     await _sub?.cancel();
     _sub = null;
     _queue = Future<void>.value();
-    _scheduled.clear();
+    _posted.clear();
   }
 
-  static Future<void> _handleItems(
+  /// Sign-out: nothing from the previous account may ring afterwards.
+  static Future<void> stopAndCancelAll() async {
+    await stop();
+    await _guard('cancel all notifications', Notifs.cancelAll);
+  }
+
+  static ReminderService _requireService() {
+    final service = _service;
+    if (service == null) {
+      throw StateError('ReminderScheduler not configured.');
+    }
+    return service;
+  }
+
+  /// Runs scheduling jobs one at a time. A failing job is logged and the
+  /// queue keeps going, so one bad reminder can't stop all scheduling.
+  static void _enqueue(Future<void> Function() job) {
+    _queue = _queue.then((_) => job()).catchError((Object e, StackTrace s) {
+      debugPrint('Reminder scheduling failed: $e\n$s');
+    });
+  }
+
+  static Future<void> _sync(
     ReminderService service,
-    List<ReminderModel> reminders,
-  ) async {
-    final ids = reminders.map((e) => e.id).toSet();
-    final removed = _scheduled.keys.where((id) => !ids.contains(id)).toList();
-    for (final id in removed) {
-      final snapshot = _scheduled.remove(id);
-      if (snapshot != null) {
-        await _cancelIds(snapshot.mainId, snapshot.preId, snapshot.secondaryId);
-      }
-    }
-
-    for (final reminder in reminders) {
-      await _handleReminder(service, reminder);
-    }
-  }
-
-  static Future<void> _handleReminder(
-    ReminderService service,
-    ReminderModel reminder,
-  ) async {
-    final previous = _scheduled[reminder.id];
-    final knownMain = reminder.notifIdMain ?? previous?.mainId;
-    final knownPre = reminder.notifIdPre ?? previous?.preId;
-    final knownSecondary = previous?.secondaryId;
-
-    if (reminder.completed || reminder.missed) {
-      await _cancelIds(knownMain, knownPre, knownSecondary);
-      _scheduled.remove(reminder.id);
-      if (reminder.notifIdMain != null || reminder.notifIdPre != null) {
-        await service.clearNotificationsForReminder(reminder.id);
-      }
-      return;
-    }
-
-    final now = DateTime.now();
-    if (reminder.dueAt.isBefore(now.subtract(_pastDueGrace))) {
-      await _cancelIds(knownMain, knownPre, knownSecondary);
-      _scheduled.remove(reminder.id);
-      await service.markReminderMissedOrAdvance(reminder.id);
-      return;
-    }
-
-    final dueAtForSchedule = reminder.dueAt.isBefore(now)
-        ? now.add(const Duration(seconds: 2))
-        : reminder.dueAt;
-
-    final preTime = dueAtForSchedule.subtract(_leadTime);
-    final shouldPre = preTime.isAfter(now);
-
-    final mainId = knownMain ?? _nextId();
-    final ringAndNotify = reminder.alertMode == ReminderAlertMode.ringAndNotify;
-    final secondaryId = ringAndNotify ? _deriveId(mainId, 1) : null;
-    final preOffset = ringAndNotify ? 2 : 1;
-    final preId = shouldPre ? (knownPre ?? _deriveId(mainId, preOffset)) : null;
-
-    final signature = [
-      reminder.dueAt.millisecondsSinceEpoch,
-      mainId,
-      preId,
-      secondaryId,
-      reminder.title,
-      reminder.description ?? '',
-      reminderAlertModeToString(reminder.alertMode),
-      reminderPriorityToString(reminder.priority),
-      reminder.alarmSoundId,
-      reminder.notificationSoundId,
-      shouldPre,
-    ].join('|');
-
-    if (signature == previous?.signature) {
-      return;
-    }
-
-    final oldIds = <int>{};
-    if (previous != null) {
-      oldIds.add(previous.mainId);
-      if (previous.preId != null) oldIds.add(previous.preId!);
-      if (previous.secondaryId != null) oldIds.add(previous.secondaryId!);
-    } else {
-      if (reminder.notifIdMain != null) oldIds.add(reminder.notifIdMain!);
-      if (reminder.notifIdPre != null) oldIds.add(reminder.notifIdPre!);
-    }
-    final newIds = <int>{mainId, ?preId, ?secondaryId};
-    for (final id in oldIds) {
-      if (!newIds.contains(id)) {
-        await Notifs.cancel(id);
-      }
-    }
-
-    final shouldWriteIds =
-        reminder.notifIdMain != mainId ||
-        reminder.notifIdPre != preId ||
-        (!shouldPre && reminder.notifIdPre != null);
-    if (shouldWriteIds) {
-      await service.setNotificationIds(
-        reminder.id,
-        mainId: mainId,
-        preId: preId,
-        clearPre: !shouldPre,
-      );
-    }
-
-    final title = _titleWithSnoozeCount(reminder);
-    final body = _bodyWithSnoozeCount(reminder.description, reminder);
-
-    await Notifs.cancel(mainId);
-    await _schedulePrimary(
-      reminder: reminder,
-      id: mainId,
-      title: title,
-      body: body,
-      whenLocal: dueAtForSchedule,
-    );
-
-    if (secondaryId != null) {
-      await Notifs.cancel(secondaryId);
-      await Notifs.schedule(
-        id: secondaryId,
-        title: title,
-        body: body,
-        whenLocal: dueAtForSchedule,
-        payload: 'notify:${reminder.id}',
-        playSound: false,
-        enableVibration: false,
-        enableActions: false,
-      );
-    }
-
-    if (shouldPre && preId != null) {
-      await Notifs.cancel(preId);
-      await Notifs.schedule(
-        id: preId,
-        title: _upcomingTitle(reminder),
-        body: _upcomingBody(reminder),
-        whenLocal: preTime,
-        payload: 'pre:${reminder.id}',
-        playSound: true,
-        notificationSoundId: reminder.notificationSoundId,
-        enableVibration: true,
-        enableActions: false,
-      );
-    }
-
-    _scheduled[reminder.id] = _ScheduleSnapshot(
-      signature: signature,
-      mainId: mainId,
-      preId: preId,
-      secondaryId: secondaryId,
-    );
-  }
-
-  static Future<void> _schedulePrimary({
-    required ReminderModel reminder,
-    required int id,
-    required String title,
-    required String? body,
-    required DateTime whenLocal,
+    List<ReminderModel> reminders, {
+    Set<String>? onlyReminderIds,
   }) async {
-    final level = _priorityLevel(reminder.priority);
-    switch (reminder.alertMode) {
-      case ReminderAlertMode.notifyOnly:
-        await Notifs.schedule(
-          id: id,
-          title: title,
-          body: body,
-          whenLocal: whenLocal,
-          payload: 'notify:${reminder.id}',
-          playSound: true,
+    final now = DateTime.now();
+    final desired = <int, PlannedAlert>{};
+    final toResolve = <String>[];
+    for (final reminder in reminders) {
+      try {
+        final plan = planReminder(reminder, now, config: config);
+        if (plan.needsMissedOrAdvance) toResolve.add(reminder.id);
+        for (final alert in plan.alerts) {
+          desired[alert.id] = alert;
+        }
+      } catch (e, s) {
+        debugPrint('Planning reminder ${reminder.id} failed: $e\n$s');
+      }
+    }
+
+    var pending = const <PendingAlert>[];
+    try {
+      pending = await Notifs.pendingAlerts();
+    } catch (e) {
+      debugPrint('Reading pending notifications failed: $e');
+    }
+    final onScreen = <int>{...AlarmUi.onScreenNotificationIds};
+    try {
+      onScreen.addAll(await Notifs.activeIds());
+    } catch (e) {
+      debugPrint('Reading active notifications failed: $e');
+    }
+
+    final pendingIds = <int>{};
+    for (final p in pending) {
+      if (onlyReminderIds != null &&
+          !onlyReminderIds.contains(p.payload?.reminderId)) {
+        continue;
+      }
+      pendingIds.add(p.id);
+      if (desired.containsKey(p.id)) continue;
+      await _guard('cancel stale alert ${p.id}', () => Notifs.cancel(p.id));
+      _posted.remove(p.id);
+    }
+
+    final ordered = desired.values.toList()
+      ..sort((a, b) => a.fireAt.compareTo(b.fireAt));
+    for (final alert in ordered) {
+      if (onScreen.contains(alert.id)) continue;
+      if (pendingIds.contains(alert.id) &&
+          _posted[alert.id] == alert.signature) {
+        continue;
+      }
+      // Posting takes time; never hand the OS a time that has just passed.
+      final earliest = DateTime.now().add(config.catchUpDelay);
+      final fireAt = alert.fireAt.isBefore(earliest) ? earliest : alert.fireAt;
+      final ok = await _guard(
+        'schedule alert ${alert.id}',
+        () => _post(alert, fireAt),
+      );
+      if (ok) _posted[alert.id] = alert.signature;
+    }
+
+    for (final id in toResolve) {
+      await _guard(
+        'resolve missed reminder $id',
+        () => service.markReminderMissedOrAdvance(id),
+      );
+    }
+  }
+
+  static Future<bool> _guard(String what, Future<void> Function() op) async {
+    try {
+      await op();
+      return true;
+    } catch (e, s) {
+      debugPrint('$what failed: $e\n$s');
+      return false;
+    }
+  }
+
+  static Future<void> _post(PlannedAlert alert, DateTime fireAt) {
+    final reminder = alert.reminder;
+    final level = switch (reminder.priority) {
+      ReminderPriority.low => AlarmPriorityLevel.low,
+      ReminderPriority.medium => AlarmPriorityLevel.medium,
+      ReminderPriority.high => AlarmPriorityLevel.high,
+    };
+    switch (alert.kind) {
+      case AlertKind.alarm:
+        return Notifs.schedule(
+          id: alert.id,
+          title: alert.title,
+          body: alert.body,
+          whenLocal: fireAt,
+          payload: alert.payload,
+          isAlarm: true,
+          alarmSoundId: reminder.alarmSoundId,
+          enableActions: reminder.alertMode == ReminderAlertMode.ringAndNotify,
+          priorityLevel: level,
+          timeoutAfter: config.ringWindow,
+        );
+      case AlertKind.notify:
+        return Notifs.schedule(
+          id: alert.id,
+          title: alert.title,
+          body: alert.body,
+          whenLocal: fireAt,
+          payload: alert.payload,
           notificationSoundId: reminder.notificationSoundId,
-          enableVibration: true,
           enableActions: false,
           priorityLevel: level,
         );
-        return;
-      case ReminderAlertMode.ringOnly:
-        await Notifs.schedule(
-          id: id,
-          title: title,
-          body: body,
-          whenLocal: whenLocal,
-          payload: 'alarm:${reminder.id}',
-          isAlarm: true,
-          alarmSoundId: reminder.alarmSoundId,
+      case AlertKind.pre:
+        return Notifs.schedule(
+          id: alert.id,
+          title: alert.title,
+          body: alert.body,
+          whenLocal: fireAt,
+          payload: alert.payload,
+          notificationSoundId: reminder.notificationSoundId,
           enableActions: false,
-          priorityLevel: level,
         );
-        return;
-      case ReminderAlertMode.ringAndNotify:
-        await Notifs.schedule(
-          id: id,
-          title: title,
-          body: body,
-          whenLocal: whenLocal,
-          payload: 'alarm:${reminder.id}',
-          isAlarm: true,
-          alarmSoundId: reminder.alarmSoundId,
-          priorityLevel: level,
-        );
-        return;
     }
   }
-
-  static String _titleWithSnoozeCount(ReminderModel reminder) {
-    if (reminder.consecutiveSnoozes < 1) {
-      return reminder.title;
-    }
-    return '${reminder.title} (${reminder.consecutiveSnoozes}x snoozed)';
-  }
-
-  static String? _bodyWithSnoozeCount(
-    String? baseBody,
-    ReminderModel reminder,
-  ) {
-    final cleaned = baseBody?.trim();
-    if (reminder.consecutiveSnoozes < 1) {
-      return cleaned?.isEmpty == true ? null : cleaned;
-    }
-    final suffix = 'Snoozed ${reminder.consecutiveSnoozes} times';
-    if (cleaned == null || cleaned.isEmpty) {
-      return suffix;
-    }
-    return '$cleaned • $suffix';
-  }
-
-  static String _upcomingBody(ReminderModel reminder) {
-    final label = reminder.alertMode == ReminderAlertMode.ringOnly
-        ? 'Alarm'
-        : 'Reminder';
-    final base = '$label: ${reminder.title} in ${_leadTime.inMinutes} minutes';
-    if (reminder.consecutiveSnoozes < 1) {
-      return base;
-    }
-    return '$base • ${reminder.consecutiveSnoozes}x snoozed';
-  }
-
-  static String _upcomingTitle(ReminderModel reminder) {
-    if (reminder.alertMode == ReminderAlertMode.ringOnly) {
-      return 'Upcoming alarm';
-    }
-    return 'Upcoming reminder';
-  }
-
-  static AlarmPriorityLevel _priorityLevel(ReminderPriority priority) {
-    switch (priority) {
-      case ReminderPriority.low:
-        return AlarmPriorityLevel.low;
-      case ReminderPriority.medium:
-        return AlarmPriorityLevel.medium;
-      case ReminderPriority.high:
-        return AlarmPriorityLevel.high;
-    }
-  }
-
-  static Future<void> _cancelIds(
-    int? mainId,
-    int? preId,
-    int? secondaryId,
-  ) async {
-    final ids = <int>{?mainId, ?preId, ?secondaryId};
-    for (final id in ids) {
-      await Notifs.cancel(id);
-    }
-  }
-
-  static int _deriveId(int base, int offset) {
-    final id = (base + offset) % _maxNotifId;
-    return id <= 0 ? 1 : id;
-  }
-
-  static int _nextId() {
-    final id = DateTime.now().millisecondsSinceEpoch % _maxNotifId;
-    return id <= 0 ? 1 : id;
-  }
-}
-
-class _ScheduleSnapshot {
-  final String signature;
-  final int mainId;
-  final int? preId;
-  final int? secondaryId;
-
-  const _ScheduleSnapshot({
-    required this.signature,
-    required this.mainId,
-    required this.preId,
-    required this.secondaryId,
-  });
 }

@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import 'alarm_popup_service.dart';
 import 'app_services.dart';
+import 'background/rearm_job.dart';
 import 'components/common/app_loading.dart';
 import 'firebase_options.dart';
 import 'notifs.dart';
@@ -84,6 +85,14 @@ class _BootstrapState extends State<_Bootstrap> {
     } catch (e) {
       debugPrint('Notification init skipped: $e');
     }
+
+    // Background re-arm: periodic safety net, plus immediate runs after
+    // reboot, app update, and time or time-zone changes (RearmReceiver.kt).
+    try {
+      await registerRearmJobs().timeout(const Duration(seconds: 8));
+    } catch (e) {
+      debugPrint('Background re-arm jobs not registered: $e');
+    }
   }
 
   void _retryInit() {
@@ -148,9 +157,40 @@ class _AuthGate extends StatefulWidget {
   State<_AuthGate> createState() => _AuthGateState();
 }
 
-class _AuthGateState extends State<_AuthGate> {
+class _AuthGateState extends State<_AuthGate> with WidgetsBindingObserver {
   String? _activeUid;
   Future<void>? _bindFuture;
+  bool _bound = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _bound) {
+      unawaited(_refreshAfterResume());
+    }
+  }
+
+  /// Picks up anything changed while the app was in the background (a snooze
+  /// from the notification, a time-zone change) and re-checks every alarm.
+  Future<void> _refreshAfterResume() async {
+    try {
+      await AppServices.reminders.reloadLocal();
+      await ReminderScheduler.rearmNow();
+    } catch (e) {
+      debugPrint('Refresh after resume failed: $e');
+    }
+  }
 
   Future<void> _bind(User user) async {
     await AppServices.bindUser(user).timeout(
@@ -176,11 +216,14 @@ class _AuthGateState extends State<_AuthGate> {
       onTimeout: () =>
           throw TimeoutException('Alarm popup service start timed out.'),
     );
+    _bound = true;
   }
 
   Future<void> _unbind() async {
+    _bound = false;
     await AlarmPopupService.stop();
-    await ReminderScheduler.stop();
+    // Signed out: none of this account's alarms may ring any more.
+    await ReminderScheduler.stopAndCancelAll();
     await AppServices.unbindUser();
   }
 

@@ -5,14 +5,17 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
+import 'alarm_ui.dart';
 import 'app_services.dart';
 import 'date_math.dart';
 import 'firebase_options.dart';
 import 'notifs.dart';
-import 'pages/alarm_screen.dart';
 import 'pages/snooze_screen.dart';
 import 'reminder_scheduler.dart';
+import 'scheduling/alert_payload.dart';
 
+/// Entry point for notification actions while the app is in the background
+/// or closed. Runs in its own isolate, which has none of the app's state.
 @pragma('vm:entry-point')
 void notificationTapBackground(NotificationResponse response) async {
   await SnoozeHandler.handle(response, openCustomUi: false);
@@ -25,147 +28,104 @@ class SnoozeHandler {
   }) async {
     WidgetsFlutterBinding.ensureInitialized();
 
-    final parsed = _parsePayload(response.payload);
-    if (parsed == null) return;
+    final payload = AlertPayload.decode(response.payload);
+    if (payload == null) return;
 
-    // Firebase / AppServices statics are per-isolate, so the notification
-    // background isolate must initialize them itself before any Firestore
-    // write or read can succeed.
+    // A background isolate starts with no time zone; scheduling the snoozed
+    // alarm would otherwise throw and the alarm would be lost.
+    await Notifs.ensureTimeZone();
+
+    // Firebase and AppServices are per isolate, so the background isolate
+    // initializes them itself before reading or writing reminders.
     try {
       await Firebase.initializeApp(
         options: DefaultFirebaseOptions.currentPlatform,
       );
     } on FirebaseException catch (e) {
-      // The foreground isolate may have already initialized the default app
-      // when this callback runs in the same process; treat that as success.
+      // The app's own isolate may already have initialized it.
       if (e.code != 'duplicate-app') rethrow;
     }
-
     await AppServices.initialize();
 
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
-
     await AppServices.bindUser(user);
+    ReminderScheduler.configure(AppServices.reminders);
 
-    final reminderId = parsed.reminderId;
     final action = response.actionId ?? '';
+    final now = DateTime.now();
 
     if (action.isEmpty) {
-      if (openCustomUi && parsed.isAlarm) {
-        final nav = Notifs.navKey.currentState;
-        if (nav != null) {
-          unawaited(
-            nav.push(
-              MaterialPageRoute<void>(
-                builder: (_) => AlarmScreen(reminderId: reminderId),
-              ),
-            ),
-          );
-        }
+      // Plain tap on the notification (or a full-screen launch).
+      if (openCustomUi && payload.isAlarm) {
+        unawaited(
+          AlarmUi.show(
+            reminderId: payload.reminderId,
+            occurrence: payload.occurrence,
+          ),
+        );
       }
       return;
     }
 
-    if (action == Notifs.aSnooze5) {
-      await _snoozeAndReschedule(
-        reminderId,
-        DateTime.now().add(const Duration(minutes: 5)),
-      );
-      return;
-    }
-
-    if (action == Notifs.aSnooze10) {
-      await _snoozeAndReschedule(
-        reminderId,
-        DateTime.now().add(const Duration(minutes: 10)),
-      );
-      return;
-    }
-
-    if (action == Notifs.aSnooze30) {
-      await _snoozeAndReschedule(
-        reminderId,
-        DateTime.now().add(const Duration(minutes: 30)),
-      );
-      return;
-    }
-
-    if (action == Notifs.aCustom) {
-      final input = (response.input ?? '').trim();
-      if (input.isNotEmpty) {
-        final custom = SnoozeParse.parseCustom(input);
+    switch (action) {
+      case Notifs.aSnooze5:
+        await _snooze(payload, now.add(const Duration(minutes: 5)));
+      case Notifs.aSnooze10:
+        await _snooze(payload, now.add(const Duration(minutes: 10)));
+      case Notifs.aSnooze30:
+        await _snooze(payload, now.add(const Duration(minutes: 30)));
+      case Notifs.aCustom:
+        final custom = SnoozeParse.parseCustom((response.input ?? '').trim());
         if (custom != null) {
-          await _snoozeAndReschedule(reminderId, custom);
-          return;
-        }
-      }
-
-      // Fall back to the in-app picker when there's no inline input.
-      // In the background isolate (`openCustomUi: false`) we have no
-      // navigator and no way to collect a duration, so we leave the original
-      // notification in place for the foreground app to handle once
-      // launched.
-      if (openCustomUi) {
-        final nav = Notifs.navKey.currentState;
-        if (nav != null) {
-          unawaited(
-            nav.push(
-              MaterialPageRoute<void>(
-                builder: (_) => SnoozeScreen(reminderId: reminderId),
+          await _snooze(payload, custom);
+        } else if (openCustomUi) {
+          // No usable inline input: let the app collect the time.
+          final nav = Notifs.navKey.currentState;
+          if (nav != null) {
+            unawaited(
+              nav.push(
+                MaterialPageRoute<void>(
+                  builder: (_) => SnoozeScreen(reminderId: payload.reminderId),
+                ),
               ),
-            ),
-          );
+            );
+          }
         }
-      }
-      return;
-    }
-
-    if (action == Notifs.aDismiss) {
-      await _dismissAndCancel(reminderId);
-      return;
+      case Notifs.aDismiss:
+        await AppServices.reminders.dismissReminder(
+          payload.reminderId,
+          expectedDueAt: payload.occurrence,
+        );
+        await _replan(payload.reminderId);
     }
   }
 
-  /// Snoozes and immediately re-schedules the next notification, even from
-  /// the notification background isolate.
-  ///
-  /// `ReminderService.snoozeReminder` only writes to Firestore + clears the
-  /// notification IDs; it relies on `ReminderScheduler` (a stream listener
-  /// started in the foreground `_AuthGate`) to actually re-arm the native
-  /// notification. The background isolate has no such listener, so we
-  /// schedule the next notification directly here before the isolate exits.
-  static Future<void> _snoozeAndReschedule(
-    String reminderId,
-    DateTime newDueAt,
-  ) async {
-    await AppServices.reminders.snoozeReminder(reminderId, newDueAt);
+  static Future<void> _snooze(AlertPayload payload, DateTime until) async {
+    await AppServices.reminders.snoozeReminder(
+      payload.reminderId,
+      until,
+      expectedDueAt: payload.occurrence,
+    );
+    await _replan(payload.reminderId);
+  }
+
+  /// The background isolate has no live data stream, so it re-plans the
+  /// reminder itself before exiting; otherwise a snoozed alarm would never be
+  /// scheduled again.
+  static Future<void> _replan(String reminderId) async {
     final updated = await AppServices.reminders.getReminder(reminderId);
-    if (updated == null) return;
-    ReminderScheduler.configure(AppServices.reminders);
-    await ReminderScheduler.scheduleOne(AppServices.reminders, updated);
-  }
-
-  /// Marks the reminder complete and proactively cancels any native
-  /// notifications still in flight, so a killed-app dismiss does not leave
-  /// the alarm scheduled to ring again on its original time.
-  static Future<void> _dismissAndCancel(String reminderId) async {
-    final before = await AppServices.reminders.getReminder(reminderId);
-    await AppServices.reminders.dismissReminder(reminderId);
-    if (before != null) {
-      await ReminderScheduler.cancelAllFor(before);
-    }
-    final after = await AppServices.reminders.getReminder(reminderId);
-    if (after != null) {
-      // Recurring reminders advance to the next occurrence on dismiss; make
-      // sure that next occurrence is actually scheduled from the BG isolate.
-      ReminderScheduler.configure(AppServices.reminders);
-      await ReminderScheduler.scheduleOne(AppServices.reminders, after);
+    if (updated == null) {
+      await ReminderScheduler.cancelReminder(reminderId);
+    } else {
+      await ReminderScheduler.replanOne(updated);
     }
   }
 }
 
 class SnoozeParse {
+  /// Parses a custom snooze: a number of minutes ("15") or a clock time
+  /// ("09:30", the next time the clock shows it).
   /// [now] is injectable for tests; production callers use the clock.
   static DateTime? parseCustom(String input, {DateTime? now}) {
     final s = input.trim();
@@ -189,28 +149,4 @@ class SnoozeParse {
 
     return null;
   }
-}
-
-class _ParsedPayload {
-  final String reminderId;
-  final bool isAlarm;
-
-  const _ParsedPayload({required this.reminderId, required this.isAlarm});
-}
-
-_ParsedPayload? _parsePayload(String? payload) {
-  if (payload == null || payload.isEmpty) return null;
-  if (payload.startsWith('alarm:')) {
-    final id = payload.substring('alarm:'.length);
-    return id.isEmpty ? null : _ParsedPayload(reminderId: id, isAlarm: true);
-  }
-  if (payload.startsWith('pre:')) {
-    final id = payload.substring('pre:'.length);
-    return id.isEmpty ? null : _ParsedPayload(reminderId: id, isAlarm: false);
-  }
-  if (payload.startsWith('notify:')) {
-    final id = payload.substring('notify:'.length);
-    return id.isEmpty ? null : _ParsedPayload(reminderId: id, isAlarm: false);
-  }
-  return _ParsedPayload(reminderId: payload, isAlarm: true);
 }

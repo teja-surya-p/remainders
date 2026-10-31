@@ -15,6 +15,17 @@ class AlarmPlayer {
 
     _started = true;
     _activeSoundId = sound.id;
+    // Alarm stream: rings at alarm volume, even with media muted or the
+    // phone on silent, like a clock app.
+    await _player.setAudioContext(
+      AudioContext(
+        android: const AudioContextAndroid(
+          usageType: AndroidUsageType.alarm,
+          contentType: AndroidContentType.sonification,
+          stayAwake: true,
+        ),
+      ),
+    );
     await _player.setReleaseMode(ReleaseMode.loop);
     await _player.stop();
     await _player.play(AssetSource(sound.assetSourcePath), volume: 1.0);

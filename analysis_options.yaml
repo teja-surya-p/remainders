@@ -15,8 +15,6 @@ analyzer:
     close_sinks: error
   exclude:
     - build/**
-    # Vendored plugin fork; replaced by flutter_timezone in the M1 reliability work.
-    - packages/**
 
 linter:
   rules:
