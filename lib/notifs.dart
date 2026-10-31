@@ -211,9 +211,7 @@ class Notifs {
         // particular schedule, but only once per session per permission so we
         // don't open the same Settings page repeatedly.
         final needNotif = !_notificationsEnabled;
-        final needExact = isAlarm &&
-            !_canScheduleExact &&
-            !_exactAlarmPrompted;
+        final needExact = isAlarm && !_canScheduleExact && !_exactAlarmPrompted;
         final needFsi = isAlarm && !_fullScreenIntentPrompted;
         if (needNotif || needExact || needFsi) {
           await _refreshAndroidPermissionState(

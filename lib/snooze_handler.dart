@@ -19,9 +19,9 @@ void notificationTapBackground(NotificationResponse response) async {
 
 class SnoozeHandler {
   static Future<void> handle(
-    NotificationResponse response,
-    {required bool openCustomUi}
-  ) async {
+    NotificationResponse response, {
+    required bool openCustomUi,
+  }) async {
     WidgetsFlutterBinding.ensureInitialized();
 
     final parsed = _parsePayload(response.payload);

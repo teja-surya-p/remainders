@@ -157,11 +157,7 @@ class ReminderScheduler {
       if (reminder.notifIdMain != null) oldIds.add(reminder.notifIdMain!);
       if (reminder.notifIdPre != null) oldIds.add(reminder.notifIdPre!);
     }
-    final newIds = <int>{
-      mainId,
-      ?preId,
-      ?secondaryId,
-    };
+    final newIds = <int>{mainId, ?preId, ?secondaryId};
     for (final id in oldIds) {
       if (!newIds.contains(id)) {
         await Notifs.cancel(id);
@@ -337,11 +333,7 @@ class ReminderScheduler {
     int? preId,
     int? secondaryId,
   ) async {
-    final ids = <int>{
-      ?mainId,
-      ?preId,
-      ?secondaryId,
-    };
+    final ids = <int>{?mainId, ?preId, ?secondaryId};
     for (final id in ids) {
       await Notifs.cancel(id);
     }

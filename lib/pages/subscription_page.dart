@@ -586,7 +586,9 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
                       onPressed: () {
                         Navigator.push(
                           context,
-                          MaterialPageRoute<void>(builder: (_) => const TermsPage()),
+                          MaterialPageRoute<void>(
+                            builder: (_) => const TermsPage(),
+                          ),
                         );
                       },
                       child: const Text('Terms of Use'),
