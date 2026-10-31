@@ -34,6 +34,38 @@ class ReminderScheduler {
     });
   }
 
+  /// Synchronously (re)schedules native notifications for a single reminder
+  /// without requiring [start] / a live stream subscription.
+  ///
+  /// This is the entry point used by the notification background isolate
+  /// after a snooze or dismiss action: the isolate has no live
+  /// [ReminderService] stream listener, so writing to Firestore alone would
+  /// never trigger a re-schedule. Calling this method directly guarantees
+  /// the next notification fires at the new dueAt before the isolate exits.
+  static Future<void> scheduleOne(
+    ReminderService service,
+    ReminderModel reminder,
+  ) async {
+    await _handleReminder(service, reminder);
+  }
+
+  /// Cancels every native notification owned by a reminder.
+  /// Used by the background isolate after a dismiss action so the user does
+  /// not see the alarm fire again on the original schedule.
+  static Future<void> cancelAllFor(ReminderModel reminder) async {
+    final snapshot = _scheduled.remove(reminder.id);
+    final ids = <int>{
+      if (reminder.notifIdMain != null) reminder.notifIdMain!,
+      if (reminder.notifIdPre != null) reminder.notifIdPre!,
+      if (snapshot != null) snapshot.mainId,
+      if (snapshot?.preId != null) snapshot!.preId!,
+      if (snapshot?.secondaryId != null) snapshot!.secondaryId!,
+    };
+    for (final id in ids) {
+      await Notifs.cancel(id);
+    }
+  }
+
   static Future<void> stop() async {
     await _sub?.cancel();
     _sub = null;

@@ -99,7 +99,7 @@ class _BootstrapState extends State<_Bootstrap> {
       future: _init,
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
-          return const AppLoadingScaffold();
+          return const AppLoadingScaffold(label: 'Starting Snooze...');
         }
         if (snapshot.hasError) {
           return Scaffold(
@@ -199,7 +199,7 @@ class _AuthGateState extends State<_AuthGate> {
       stream: FirebaseAuth.instance.authStateChanges(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return const AppLoadingScaffold();
+          return const AppLoadingScaffold(label: 'Checking account...');
         }
 
         final user = snapshot.data;
@@ -216,7 +216,9 @@ class _AuthGateState extends State<_AuthGate> {
           future: _ensureBound(user),
           builder: (context, bindSnapshot) {
             if (bindSnapshot.connectionState != ConnectionState.done) {
-              return const AppLoadingScaffold();
+              return const AppLoadingScaffold(
+                label: 'Loading your reminders...',
+              );
             }
             if (bindSnapshot.hasError) {
               return Scaffold(

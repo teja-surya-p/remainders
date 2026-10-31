@@ -7,6 +7,7 @@ import 'pages/alarm_screen.dart';
 import 'app_services.dart';
 import 'firebase_options.dart';
 import 'notifs.dart';
+import 'reminder_scheduler.dart';
 import 'pages/snooze_screen.dart';
 
 @pragma('vm:entry-point')
@@ -16,17 +17,26 @@ void notificationTapBackground(NotificationResponse response) async {
 
 class SnoozeHandler {
   static Future<void> handle(
-    NotificationResponse response, {
-    required bool openCustomUi,
-  }) async {
+    NotificationResponse response,
+    {required bool openCustomUi}
+  ) async {
     WidgetsFlutterBinding.ensureInitialized();
 
     final parsed = _parsePayload(response.payload);
     if (parsed == null) return;
 
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
+    // Firebase / AppServices statics are per-isolate, so the notification
+    // background isolate must initialize them itself before any Firestore
+    // write or read can succeed.
+    try {
+      await Firebase.initializeApp(
+        options: DefaultFirebaseOptions.currentPlatform,
+      );
+    } on FirebaseException catch (e) {
+      // The foreground isolate may have already initialized the default app
+      // when this callback runs in the same process; treat that as success.
+      if (e.code != 'duplicate-app') rethrow;
+    }
 
     await AppServices.initialize();
 
@@ -53,7 +63,7 @@ class SnoozeHandler {
     }
 
     if (action == Notifs.aSnooze5) {
-      await AppServices.reminders.snoozeReminder(
+      await _snoozeAndReschedule(
         reminderId,
         DateTime.now().add(const Duration(minutes: 5)),
       );
@@ -61,7 +71,7 @@ class SnoozeHandler {
     }
 
     if (action == Notifs.aSnooze10) {
-      await AppServices.reminders.snoozeReminder(
+      await _snoozeAndReschedule(
         reminderId,
         DateTime.now().add(const Duration(minutes: 10)),
       );
@@ -69,7 +79,7 @@ class SnoozeHandler {
     }
 
     if (action == Notifs.aSnooze30) {
-      await AppServices.reminders.snoozeReminder(
+      await _snoozeAndReschedule(
         reminderId,
         DateTime.now().add(const Duration(minutes: 30)),
       );
@@ -81,11 +91,16 @@ class SnoozeHandler {
       if (input.isNotEmpty) {
         final custom = SnoozeParse.parseCustom(input);
         if (custom != null) {
-          await AppServices.reminders.snoozeReminder(reminderId, custom);
+          await _snoozeAndReschedule(reminderId, custom);
           return;
         }
       }
 
+      // Fall back to the in-app picker when there's no inline input.
+      // In the background isolate (`openCustomUi: false`) we have no
+      // navigator and no way to collect a duration, so we leave the original
+      // notification in place for the foreground app to handle once
+      // launched.
       if (openCustomUi) {
         final nav = Notifs.navKey.currentState;
         if (nav != null) {
@@ -100,8 +115,45 @@ class SnoozeHandler {
     }
 
     if (action == Notifs.aDismiss) {
-      await AppServices.reminders.dismissReminder(reminderId);
+      await _dismissAndCancel(reminderId);
       return;
+    }
+  }
+
+  /// Snoozes and immediately re-schedules the next notification, even from
+  /// the notification background isolate.
+  ///
+  /// `ReminderService.snoozeReminder` only writes to Firestore + clears the
+  /// notification IDs; it relies on `ReminderScheduler` (a stream listener
+  /// started in the foreground `_AuthGate`) to actually re-arm the native
+  /// notification. The background isolate has no such listener, so we
+  /// schedule the next notification directly here before the isolate exits.
+  static Future<void> _snoozeAndReschedule(
+    String reminderId,
+    DateTime newDueAt,
+  ) async {
+    await AppServices.reminders.snoozeReminder(reminderId, newDueAt);
+    final updated = await AppServices.reminders.getReminder(reminderId);
+    if (updated == null) return;
+    ReminderScheduler.configure(AppServices.reminders);
+    await ReminderScheduler.scheduleOne(AppServices.reminders, updated);
+  }
+
+  /// Marks the reminder complete and proactively cancels any native
+  /// notifications still in flight, so a killed-app dismiss does not leave
+  /// the alarm scheduled to ring again on its original time.
+  static Future<void> _dismissAndCancel(String reminderId) async {
+    final before = await AppServices.reminders.getReminder(reminderId);
+    await AppServices.reminders.dismissReminder(reminderId);
+    if (before != null) {
+      await ReminderScheduler.cancelAllFor(before);
+    }
+    final after = await AppServices.reminders.getReminder(reminderId);
+    if (after != null) {
+      // Recurring reminders advance to the next occurrence on dismiss; make
+      // sure that next occurrence is actually scheduled from the BG isolate.
+      ReminderScheduler.configure(AppServices.reminders);
+      await ReminderScheduler.scheduleOne(AppServices.reminders, after);
     }
   }
 }

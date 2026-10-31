@@ -20,6 +20,13 @@ class Notifs {
   static bool _notificationsEnabled = true;
   static final Set<String> _createdChannelIds = <String>{};
 
+  // Track which OS permission prompts we have already shown the user this
+  // session so we don't bounce them through multiple Settings pages back to
+  // back (especially the exact-alarm + full-screen-intent prompts which are
+  // separate Settings activities, not in-app dialogs).
+  static bool _exactAlarmPrompted = false;
+  static bool _fullScreenIntentPrompted = false;
+
   static const String categoryId = 'REMINDER_CATEGORY';
   static const String _alarmLowChannelBase = 'reminders_alarm_low_v3';
   static const String _alarmMediumChannelBase = 'reminders_alarm_medium_v3';
@@ -85,7 +92,11 @@ class Notifs {
       ],
     );
 
-    const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
+    // Use a monochrome alpha-only drawable for the status-bar small icon.
+    // The system renders @mipmap/ic_launcher (a colored bitmap) as a featureless
+    // grey square because it ignores all channels except alpha for the small
+    // icon position.
+    const androidInit = AndroidInitializationSettings('ic_stat_notification');
 
     await _p.initialize(
       settings: InitializationSettings(android: androidInit, iOS: iosInit),
@@ -113,24 +124,53 @@ class Notifs {
           .resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin
           >();
-      await _refreshAndroidPermissionState(android, request: true);
+      // Only ask for the POST_NOTIFICATIONS runtime permission on init — it's
+      // an in-app dialog. Defer SCHEDULE_EXACT_ALARM and USE_FULL_SCREEN_INTENT
+      // (each opens a separate Settings page) until the user actually creates
+      // an alarm reminder, so we never bounce them through three system
+      // screens during first launch.
+      await _refreshAndroidPermissionState(
+        android,
+        requestNotif: true,
+        requestExactAlarm: false,
+        requestFullScreenIntent: false,
+      );
       await _createAndroidChannels(android);
     }
   }
 
   static Future<void> _configureTimezone() async {
     try {
-      final name = await FlutterNativeTimezone.getLocalTimezone().timeout(
+      final nativeName = await FlutterNativeTimezone.getLocalTimezone().timeout(
         const Duration(seconds: 3),
       );
       try {
-        tz.setLocalLocation(tz.getLocation(name));
+        tz.setLocalLocation(tz.getLocation(nativeName));
         return;
-      } catch (_) {}
-    } catch (_) {}
+      } catch (_) {
+        // Native name was not in the IANA database — fall through to the
+        // offset-based fallback below.
+      }
+    } catch (_) {
+      // Plugin call failed (e.g. platform channel error) — fall through.
+    }
 
-    // Fallback prevents startup failures when timezone plugin is unavailable.
-    tz.setLocalLocation(tz.getLocation('UTC'));
+    // Best-effort fallback: derive a fixed-offset zone from the system clock
+    // so absolute scheduling stays correct even when the IANA name lookup
+    // fails. Etc/GMT zones use POSIX-inverted signs (Etc/GMT+5 is UTC-5h).
+    try {
+      final offsetMinutes = DateTime.now().timeZoneOffset.inMinutes;
+      final hours = offsetMinutes ~/ 60;
+      if (hours == 0) {
+        tz.setLocalLocation(tz.getLocation('UTC'));
+        return;
+      }
+      final etcName = hours > 0 ? 'Etc/GMT-$hours' : 'Etc/GMT+${-hours}';
+      tz.setLocalLocation(tz.getLocation(etcName));
+      return;
+    } catch (_) {
+      tz.setLocalLocation(tz.getLocation('UTC'));
+    }
   }
 
   static NotificationResponse? takePendingLaunchResponse() {
@@ -160,10 +200,31 @@ class Notifs {
             AndroidFlutterLocalNotificationsPlugin
           >();
       androidPlatform = android;
-      await _refreshAndroidPermissionState(android, request: false);
-      if ((!_notificationsEnabled || (isAlarm && !_canScheduleExact)) &&
-          android != null) {
-        await _refreshAndroidPermissionState(android, request: true);
+      await _refreshAndroidPermissionState(
+        android,
+        requestNotif: false,
+        requestExactAlarm: false,
+        requestFullScreenIntent: false,
+      );
+      if (android != null) {
+        // Lazily prompt for the OS-level permissions we actually need for this
+        // particular schedule, but only once per session per permission so we
+        // don't open the same Settings page repeatedly.
+        final needNotif = !_notificationsEnabled;
+        final needExact = isAlarm &&
+            !_canScheduleExact &&
+            !_exactAlarmPrompted;
+        final needFsi = isAlarm && !_fullScreenIntentPrompted;
+        if (needNotif || needExact || needFsi) {
+          await _refreshAndroidPermissionState(
+            android,
+            requestNotif: needNotif,
+            requestExactAlarm: needExact,
+            requestFullScreenIntent: needFsi,
+          );
+          if (needExact) _exactAlarmPrompted = true;
+          if (needFsi) _fullScreenIntentPrompted = true;
+        }
       }
       if (!_notificationsEnabled) {
         debugPrint(
@@ -207,16 +268,29 @@ class Notifs {
       fullScreenIntent: isAlarm,
       audioAttributesUsage: channel.audioUsage,
       actions: enableActions
-          ? const <AndroidNotificationAction>[
-              AndroidNotificationAction(aSnooze5, '5m'),
-              AndroidNotificationAction(aSnooze10, '10m'),
-              AndroidNotificationAction(aSnooze30, '30m'),
-              AndroidNotificationAction(
+          ? <AndroidNotificationAction>[
+              const AndroidNotificationAction(aSnooze5, '5m'),
+              const AndroidNotificationAction(aSnooze10, '10m'),
+              const AndroidNotificationAction(aSnooze30, '30m'),
+              // Inline RemoteInput lets the user type a custom snooze duration
+              // (minutes) directly from the notification, even when the app is
+              // killed. Without inputs, the background isolate has no way to
+              // know what duration to apply and the action would silently
+              // do nothing. `showsUserInterface: true` is the fallback for
+              // taps without input — it brings the app to the foreground so
+              // SnoozeScreen can collect the value.
+              const AndroidNotificationAction(
                 aCustom,
                 'Custom',
                 showsUserInterface: true,
+                inputs: <AndroidNotificationActionInput>[
+                  AndroidNotificationActionInput(
+                    label: 'Minutes (e.g. 15)',
+                    allowFreeFormInput: true,
+                  ),
+                ],
               ),
-              AndroidNotificationAction(aDismiss, 'Dismiss'),
+              const AndroidNotificationAction(aDismiss, 'Dismiss'),
             ]
           : const <AndroidNotificationAction>[],
     );
@@ -354,11 +428,12 @@ class Notifs {
     required AndroidScheduleMode androidScheduleMode,
     required String? payload,
   }) async {
+    final scheduledAt = tz.TZDateTime.from(whenLocal, tz.local);
     await _p.zonedSchedule(
       id: id,
       title: title,
       body: body,
-      scheduledDate: tz.TZDateTime.from(whenLocal, tz.local),
+      scheduledDate: scheduledAt,
       notificationDetails: details,
       androidScheduleMode: androidScheduleMode,
       payload: payload,
@@ -367,17 +442,23 @@ class Notifs {
 
   static Future<void> _refreshAndroidPermissionState(
     AndroidFlutterLocalNotificationsPlugin? android, {
-    required bool request,
+    required bool requestNotif,
+    required bool requestExactAlarm,
+    required bool requestFullScreenIntent,
   }) async {
     if (android == null) return;
 
-    if (request) {
+    if (requestNotif) {
       try {
         await android.requestNotificationsPermission();
       } catch (_) {}
+    }
+    if (requestExactAlarm) {
       try {
         await android.requestExactAlarmsPermission();
       } catch (_) {}
+    }
+    if (requestFullScreenIntent) {
       try {
         await android.requestFullScreenIntentPermission();
       } catch (_) {}
