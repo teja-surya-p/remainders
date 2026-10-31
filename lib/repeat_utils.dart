@@ -1,3 +1,4 @@
+import 'date_math.dart';
 import 'reminder_model.dart';
 
 List<int> parseRepeatDays(dynamic raw) {
@@ -36,7 +37,7 @@ DateTime? nextOccurrence({
   if (type == RepeatType.daily) {
     final startDate = DateTime(from.year, from.month, from.day);
     for (var i = 0; i < 3660; i += 1) {
-      final date = startDate.add(Duration(days: i));
+      final date = addDays(startDate, i);
       final candidate = _firstTimeOnDate(
         date,
         normalizedTimes,
@@ -54,7 +55,7 @@ DateTime? nextOccurrence({
     final allowed = days.toSet();
     final startDate = DateTime(from.year, from.month, from.day);
     for (var i = 0; i < 3660; i += 1) {
-      final date = startDate.add(Duration(days: i));
+      final date = addDays(startDate, i);
       if (!allowed.contains(date.weekday)) continue;
       final candidate = _firstTimeOnDate(
         date,
@@ -78,8 +79,8 @@ DateTime? nextOccurrence({
     );
     final startDate = DateTime(from.year, from.month, from.day);
     for (var i = 0; i < 3660; i += 1) {
-      final date = startDate.add(Duration(days: i));
-      final diff = date.difference(base).inDays;
+      final date = addDays(startDate, i);
+      final diff = daysBetween(base, date);
       if (diff < 0 || diff % every != 0) continue;
       final candidate = _firstTimeOnDate(
         date,
@@ -140,7 +141,7 @@ List<DateTime> occurrencesInRange({
     } else if (type == RepeatType.interval) {
       final every = intervalDays ?? 1;
       if (every > 0) {
-        final diff = cursor.difference(base).inDays;
+        final diff = daysBetween(base, cursor);
         include = diff >= 0 && diff % every == 0;
       }
     }
@@ -155,7 +156,7 @@ List<DateTime> occurrencesInRange({
       }
     }
 
-    cursor = cursor.add(const Duration(days: 1));
+    cursor = addDays(cursor, 1);
   }
 
   out.sort();

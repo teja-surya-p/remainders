@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../../date_math.dart';
 import '../../reminder_model.dart';
 import '../../reminder_service.dart';
 import '../../reminder_sounds.dart';
@@ -177,7 +178,7 @@ class _ReminderEditorDialogState extends State<ReminderEditorDialog> {
     final now = DateTime.now();
     var candidate = dateWithMinutes(now, _times.first);
     if (candidate.isBefore(now)) {
-      candidate = candidate.add(const Duration(days: 1));
+      candidate = addDays(candidate, 1);
     }
     return candidate;
   }

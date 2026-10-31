@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../../date_math.dart';
 import '../../reminder_service.dart';
 
 class ContributionHeatmap extends StatelessWidget {
@@ -28,8 +29,8 @@ class ContributionHeatmap extends StatelessWidget {
     final sorted = [...days]..sort((a, b) => a.day.compareTo(b.day));
     final start = sorted.first.day;
     final end = sorted.last.day;
-    final alignedStart = start.subtract(Duration(days: start.weekday - 1));
-    final totalCells = end.difference(alignedStart).inDays + 1;
+    final alignedStart = addDays(start, -(start.weekday - 1));
+    final totalCells = daysBetween(alignedStart, end) + 1;
     final columns = (totalCells / 7).ceil();
     final maxCompleted = sorted.fold<int>(
       0,
@@ -53,7 +54,7 @@ class ContributionHeatmap extends StatelessWidget {
                   for (var row = 0; row < 7; row += 1)
                     _buildCell(
                       context: context,
-                      day: alignedStart.add(Duration(days: (column * 7) + row)),
+                      day: addDays(alignedStart, (column * 7) + row),
                       rangeStart: start,
                       rangeEnd: end,
                       byDay: byDay,

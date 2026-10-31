@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:firebase_auth/firebase_auth.dart';
 
+import 'date_math.dart';
 import 'reminder_model.dart';
 import 'reminder_sounds.dart';
 import 'reminder_store.dart';
@@ -836,12 +837,10 @@ class ReminderService {
     }
 
     final safeContributionDays = contributionDays <= 0 ? 84 : contributionDays;
-    final contributionStart = today.subtract(
-      Duration(days: safeContributionDays - 1),
-    );
+    final contributionStart = addDays(today, -(safeContributionDays - 1));
     final contribution = <ProductivityDayStats>[];
     for (var i = 0; i < safeContributionDays; i += 1) {
-      final day = contributionStart.add(Duration(days: i));
+      final day = addDays(contributionStart, i);
       final key = day.millisecondsSinceEpoch;
       final bucket = dayBuckets[key];
       contribution.add(
@@ -1333,8 +1332,7 @@ class ReminderService {
     if (prev == null) return false;
 
     if (!reminder.recurrence.isRepeating) {
-      return dayOnly(prev) ==
-          dayOnly(scheduledAt.subtract(const Duration(days: 1)));
+      return dayOnly(prev) == dayOnly(addDays(scheduledAt, -1));
     }
 
     final expected = _computeNextRecurringDue(
@@ -1365,7 +1363,7 @@ class ReminderService {
     var cursor = today;
     while (completedDayKeys.contains(cursor.millisecondsSinceEpoch)) {
       streak += 1;
-      cursor = cursor.subtract(const Duration(days: 1));
+      cursor = addDays(cursor, -1);
     }
     return streak;
   }
@@ -1378,7 +1376,7 @@ class ReminderService {
     for (var i = 1; i < ordered.length; i += 1) {
       final prev = DateTime.fromMillisecondsSinceEpoch(ordered[i - 1]);
       final cur = DateTime.fromMillisecondsSinceEpoch(ordered[i]);
-      if (dayOnly(cur) == dayOnly(prev.add(const Duration(days: 1)))) {
+      if (dayOnly(cur) == dayOnly(addDays(prev, 1))) {
         current += 1;
       } else {
         current = 1;

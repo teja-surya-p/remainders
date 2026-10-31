@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import 'app_services.dart';
+import 'date_math.dart';
 import 'firebase_options.dart';
 import 'notifs.dart';
 import 'pages/alarm_screen.dart';
@@ -165,13 +166,15 @@ class SnoozeHandler {
 }
 
 class SnoozeParse {
-  static DateTime? parseCustom(String input) {
+  /// [now] is injectable for tests; production callers use the clock.
+  static DateTime? parseCustom(String input, {DateTime? now}) {
     final s = input.trim();
     if (s.isEmpty) return null;
 
+    final clock = now ?? DateTime.now();
     final mins = int.tryParse(s);
     if (mins != null && mins > 0) {
-      return DateTime.now().add(Duration(minutes: mins));
+      return clock.add(Duration(minutes: mins));
     }
 
     final m = RegExp(r'^(\d{1,2}):(\d{2})$').firstMatch(s);
@@ -179,9 +182,8 @@ class SnoozeParse {
       final hh = int.parse(m.group(1)!);
       final mm = int.parse(m.group(2)!);
       if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
-      final now = DateTime.now();
-      var dt = DateTime(now.year, now.month, now.day, hh, mm);
-      if (dt.isBefore(now)) dt = dt.add(const Duration(days: 1));
+      var dt = DateTime(clock.year, clock.month, clock.day, hh, mm);
+      if (dt.isBefore(clock)) dt = addDays(dt, 1);
       return dt;
     }
 
