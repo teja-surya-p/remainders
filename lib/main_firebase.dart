@@ -5,8 +5,8 @@ import 'package:flutter/material.dart';
 import 'alarm_popup_service.dart';
 import 'app_services.dart';
 import 'firebase_options.dart';
-import 'pages/home_page.dart';
 import 'notifs.dart';
+import 'pages/home_page.dart';
 import 'reminder_scheduler.dart';
 import 'snooze_handler.dart';
 

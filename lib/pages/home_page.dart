@@ -186,7 +186,7 @@ class _ReminderListTabState extends State<_ReminderListTab> {
     }
 
     await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => AlarmScreen(reminderId: target.id)),
+      MaterialPageRoute<void>(builder: (_) => AlarmScreen(reminderId: target.id)),
     );
   }
 

@@ -263,7 +263,7 @@ class _ProfileBody extends StatelessWidget {
                     return;
                   }
                   Navigator.of(context).push(
-                    MaterialPageRoute(
+                    MaterialPageRoute<void>(
                       builder: (_) => SubscriptionPage(
                         subscription: AppServices.subscription,
                       ),
@@ -278,7 +278,7 @@ class _ProfileBody extends StatelessWidget {
               label: 'Invite & Share',
               onTap: () {
                 Navigator.of(context).push(
-                  MaterialPageRoute(
+                  MaterialPageRoute<void>(
                     builder: (_) => SharingPage(
                       onOpenSubscription: onOpenSubscription ?? () {},
                     ),

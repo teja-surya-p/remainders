@@ -336,7 +336,7 @@ class _ShareTab extends StatelessWidget {
             ),
           const SizedBox(height: 10),
           FilledButton.icon(
-            onPressed: busy || active.isEmpty ? null : () => onCreate(),
+            onPressed: busy || active.isEmpty ? null : onCreate,
             icon: const Icon(Icons.send_rounded),
             label: const Text('Generate Invite Link'),
           ),
@@ -426,7 +426,7 @@ class _JoinTab extends StatelessWidget {
           ),
           const SizedBox(height: 10),
           FilledButton(
-            onPressed: busy ? null : () => onJoin(),
+            onPressed: busy ? null : onJoin,
             child: const Text('Join Reminder'),
           ),
         ],

@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
-import '../common/app_ui.dart';
 import '../../reminder_model.dart';
-import '../../reminder_sounds.dart';
 import '../../reminder_service.dart';
+import '../../reminder_sounds.dart';
 import '../../sound_preview_player.dart';
+import '../common/app_ui.dart';
 
 class ReminderDraft {
   final String title;
@@ -119,7 +119,7 @@ class _ReminderEditorDialogState extends State<ReminderEditorDialog> {
       lastDate: DateTime(now.year + 5),
       initialDate: _dueAt ?? now,
     );
-    if (date == null) return;
+    if (date == null || !mounted) return;
 
     final time = await showTimePicker(
       context: context,
@@ -626,22 +626,14 @@ class _ReminderEditorDialogState extends State<ReminderEditorDialog> {
                   try {
                     await widget.onSave(draft);
                     if (context.mounted) Navigator.pop(context, 'created');
-                  } catch (e) {
-                    if (e is PremiumRequiredException) {
-                      if (context.mounted) {
-                        Navigator.pop(context, 'premium_required');
-                      }
-                      return;
+                  } on PremiumRequiredException {
+                    if (context.mounted) {
+                      Navigator.pop(context, 'premium_required');
                     }
-                    if (!mounted) return;
-                    setState(() {
-                      _error = e.toString();
-                    });
+                  } catch (e) {
+                    if (mounted) setState(() => _error = e.toString());
                   } finally {
-                    if (!mounted) return;
-                    setState(() {
-                      _saving = false;
-                    });
+                    if (mounted) setState(() => _saving = false);
                   }
                 },
           child: const Text('Save'),

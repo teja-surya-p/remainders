@@ -80,7 +80,7 @@ class _AlarmScreenState extends State<AlarmScreen>
       lastDate: DateTime(now.year + 5),
       initialDate: _exactSnoozeAt ?? now,
     );
-    if (date == null) return;
+    if (date == null || !mounted) return;
 
     final time = await showTimePicker(
       context: context,
@@ -470,7 +470,7 @@ class _PulsePainter extends CustomPainter {
     final center = size.center(Offset.zero);
     final rings = [0.0, 0.33, 0.66];
     for (final shift in rings) {
-      final t = ((progress + shift) % 1);
+      final t = (progress + shift) % 1;
       final radius = 40 + (t * 62);
       final opacity = (1 - t).clamp(0.0, 1.0) * 0.22;
       final paint = Paint()

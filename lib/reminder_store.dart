@@ -168,8 +168,8 @@ class LocalReminderStore implements ReminderStore {
     try {
       final list = jsonDecode(raw) as List<dynamic>;
       return list
-          .whereType<Map>()
-          .map((e) => Map<String, dynamic>.from(e))
+          .whereType<Map<dynamic, dynamic>>()
+          .map(Map<String, dynamic>.from)
           .map(ReminderModel.fromJson)
           .where((r) => r.id.isNotEmpty)
           .toList();
@@ -187,8 +187,8 @@ class LocalReminderStore implements ReminderStore {
     try {
       final list = jsonDecode(raw) as List<dynamic>;
       return list
-          .whereType<Map>()
-          .map((e) => Map<String, dynamic>.from(e))
+          .whereType<Map<dynamic, dynamic>>()
+          .map(Map<String, dynamic>.from)
           .map(ReminderEvent.fromJson)
           .where((e) => e.id.isNotEmpty)
           .toList();

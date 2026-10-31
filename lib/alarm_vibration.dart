@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:vibration/vibration.dart';
@@ -15,9 +16,9 @@ class AlarmVibration {
     if (!hasVibrator) return;
 
     if (Platform.isAndroid) {
-      Vibration.vibrate(pattern: [0, 1000, 500, 1000], repeat: 1);
+      unawaited(Vibration.vibrate(pattern: [0, 1000, 500, 1000], repeat: 1));
     } else {
-      Vibration.vibrate(pattern: [0, 500, 500, 500], repeat: 1);
+      unawaited(Vibration.vibrate(pattern: [0, 500, 500, 500], repeat: 1));
     }
   }
 
@@ -25,6 +26,6 @@ class AlarmVibration {
     if (!_started) return;
     _started = false;
     final hasVibrator = await Vibration.hasVibrator();
-    if (hasVibrator) Vibration.cancel();
+    if (hasVibrator) await Vibration.cancel();
   }
 }

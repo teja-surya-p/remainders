@@ -29,7 +29,7 @@ class _SnoozeScreenState extends State<SnoozeScreen> {
       lastDate: DateTime(now.year + 5),
       initialDate: _exact ?? now,
     );
-    if (date == null) return;
+    if (date == null || !mounted) return;
 
     final time = await showTimePicker(
       context: context,

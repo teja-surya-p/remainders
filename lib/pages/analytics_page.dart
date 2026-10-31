@@ -246,7 +246,7 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
                     return AppSurfaceCard(
                       onTap: () {
                         Navigator.of(context).push(
-                          MaterialPageRoute(
+                          MaterialPageRoute<void>(
                             builder: (_) => AnalyticsDetailPage(
                               detail: card.type,
                               insights: insights,

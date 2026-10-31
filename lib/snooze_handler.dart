@@ -1,14 +1,16 @@
+import 'dart:async';
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
-import 'pages/alarm_screen.dart';
 import 'app_services.dart';
 import 'firebase_options.dart';
 import 'notifs.dart';
-import 'reminder_scheduler.dart';
+import 'pages/alarm_screen.dart';
 import 'pages/snooze_screen.dart';
+import 'reminder_scheduler.dart';
 
 @pragma('vm:entry-point')
 void notificationTapBackground(NotificationResponse response) async {
@@ -52,9 +54,11 @@ class SnoozeHandler {
       if (openCustomUi && parsed.isAlarm) {
         final nav = Notifs.navKey.currentState;
         if (nav != null) {
-          nav.push(
-            MaterialPageRoute(
-              builder: (_) => AlarmScreen(reminderId: reminderId),
+          unawaited(
+            nav.push(
+              MaterialPageRoute<void>(
+                builder: (_) => AlarmScreen(reminderId: reminderId),
+              ),
             ),
           );
         }
@@ -104,9 +108,11 @@ class SnoozeHandler {
       if (openCustomUi) {
         final nav = Notifs.navKey.currentState;
         if (nav != null) {
-          nav.push(
-            MaterialPageRoute(
-              builder: (_) => SnoozeScreen(reminderId: reminderId),
+          unawaited(
+            nav.push(
+              MaterialPageRoute<void>(
+                builder: (_) => SnoozeScreen(reminderId: reminderId),
+              ),
             ),
           );
         }
