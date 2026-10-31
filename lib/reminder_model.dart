@@ -200,6 +200,9 @@ class ReminderModel {
   final String? lastOccurrenceStatus;
   final int? notifIdMain;
   final int? notifIdPre;
+
+  /// Optional heads-up before the main alert (5/10/30/60 min). Null = off.
+  final int? remindBeforeMinutes;
   final DateTime createdAt;
   final DateTime updatedAt;
 
@@ -234,6 +237,7 @@ class ReminderModel {
     this.lastOccurrenceStatus,
     this.notifIdMain,
     this.notifIdPre,
+    this.remindBeforeMinutes,
   }) : recurrence = recurrence ?? ReminderRecurrence();
 
   bool get isActive => !completed && !missed;
@@ -277,6 +281,8 @@ class ReminderModel {
     bool clearNotifIdMain = false,
     int? notifIdPre,
     bool clearNotifIdPre = false,
+    int? remindBeforeMinutes,
+    bool clearRemindBefore = false,
     DateTime? createdAt,
     DateTime? updatedAt,
   }) {
@@ -323,6 +329,9 @@ class ReminderModel {
           : (lastOccurrenceStatus ?? this.lastOccurrenceStatus),
       notifIdMain: clearNotifIdMain ? null : (notifIdMain ?? this.notifIdMain),
       notifIdPre: clearNotifIdPre ? null : (notifIdPre ?? this.notifIdPre),
+      remindBeforeMinutes: clearRemindBefore
+          ? null
+          : (remindBeforeMinutes ?? this.remindBeforeMinutes),
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
     );
@@ -358,6 +367,7 @@ class ReminderModel {
       'lastOccurrenceStatus': lastOccurrenceStatus,
       'notifIdMain': notifIdMain,
       'notifIdPre': notifIdPre,
+      'remindBeforeMinutes': remindBeforeMinutes,
       'createdAt': createdAt.toIso8601String(),
       'updatedAt': updatedAt.toIso8601String(),
     };
@@ -392,6 +402,7 @@ class ReminderModel {
       'lastOccurrenceStatus': lastOccurrenceStatus,
       'notifIdMain': notifIdMain,
       'notifIdPre': notifIdPre,
+      'remindBeforeMinutes': remindBeforeMinutes,
       'createdAt': Timestamp.fromDate(createdAt),
       'updatedAt': Timestamp.fromDate(updatedAt),
     };
@@ -434,6 +445,7 @@ class ReminderModel {
       lastOccurrenceStatus: json['lastOccurrenceStatus'] as String?,
       notifIdMain: (json['notifIdMain'] as num?)?.toInt(),
       notifIdPre: (json['notifIdPre'] as num?)?.toInt(),
+      remindBeforeMinutes: (json['remindBeforeMinutes'] as num?)?.toInt(),
       createdAt: _parseDate(json['createdAt']) ?? now,
       updatedAt: _parseDate(json['updatedAt']) ?? now,
     );
@@ -476,6 +488,7 @@ class ReminderModel {
       lastOccurrenceStatus: data['lastOccurrenceStatus'] as String?,
       notifIdMain: (data['notifIdMain'] as num?)?.toInt(),
       notifIdPre: (data['notifIdPre'] as num?)?.toInt(),
+      remindBeforeMinutes: (data['remindBeforeMinutes'] as num?)?.toInt(),
       createdAt: _parseDate(data['createdAt']) ?? now,
       updatedAt: _parseDate(data['updatedAt']) ?? now,
     );
