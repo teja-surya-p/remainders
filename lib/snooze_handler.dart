@@ -1,14 +1,11 @@
 import 'dart:async';
 
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import 'alarm_ui.dart';
 import 'app_services.dart';
 import 'date_math.dart';
-import 'firebase_options.dart';
 import 'notifs.dart';
 import 'pages/snooze_screen.dart';
 import 'reminder_scheduler.dart';
@@ -35,21 +32,9 @@ class SnoozeHandler {
     // alarm would otherwise throw and the alarm would be lost.
     await Notifs.ensureTimeZone();
 
-    // Firebase and AppServices are per isolate, so the background isolate
-    // initializes them itself before reading or writing reminders.
-    try {
-      await Firebase.initializeApp(
-        options: DefaultFirebaseOptions.currentPlatform,
-      );
-    } on FirebaseException catch (e) {
-      // The app's own isolate may already have initialized it.
-      if (e.code != 'duplicate-app') rethrow;
-    }
-    await AppServices.initialize();
-
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-    await AppServices.bindUser(user);
+    // State is per isolate. The device's reminders need no account and no
+    // network, so a background isolate just opens them.
+    await AppServices.initializeForBackground();
     ReminderScheduler.configure(AppServices.reminders);
 
     final action = response.actionId ?? '';

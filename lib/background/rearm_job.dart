@@ -1,11 +1,8 @@
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:workmanager/workmanager.dart';
 
 import '../app_services.dart';
-import '../firebase_options.dart';
 import '../notifs.dart';
 import '../reminder_scheduler.dart';
 
@@ -35,18 +32,8 @@ void rearmCallbackDispatcher() {
 Future<void> rearmFromBackground() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Notifs.ensureTimeZone();
-  try {
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
-  } on FirebaseException catch (e) {
-    if (e.code != 'duplicate-app') rethrow;
-  }
-  await AppServices.initialize();
-
-  final user = FirebaseAuth.instance.currentUser;
-  if (user == null) return; // Signed out: nothing should ring.
-  await AppServices.bindUser(user);
+  // The device's reminders need no account and no network.
+  await AppServices.initializeForBackground();
   ReminderScheduler.configure(AppServices.reminders);
   await ReminderScheduler.rearmNow();
 }

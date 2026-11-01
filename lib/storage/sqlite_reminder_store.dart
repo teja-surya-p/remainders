@@ -30,7 +30,7 @@ class StoredReminderRow {
 /// The device's reminders, stored in SQLite. This is the source of truth for
 /// everyone, signed in or not; the cloud is only a backup.
 ///
-/// Each reminder is its own row, written atomically, so:
+/// Each reminder is its own row, written atomically in a transaction, so:
 /// - the app and its background isolates (notification actions, re-arm jobs)
 ///   can't overwrite each other's changes the way one shared JSON blob could;
 /// - one unreadable reminder is skipped instead of losing the whole list.
@@ -70,32 +70,36 @@ class SqliteReminderStore implements ReminderStore {
       options: OpenDatabaseOptions(
         version: _schemaVersion,
         onConfigure: (db) async {
-          // Several isolates in this process open the same file: WAL lets them
-          // read while another writes, and a busy timeout makes writers wait
-          // instead of failing.
-          await db.rawQuery('PRAGMA journal_mode=WAL');
+          // The app and its background isolates (notification actions, the
+          // re-arm job) can open this file at the same moment, e.g. right
+          // after an update: writers wait for each other instead of failing.
+          // (Android's SQLite manages the journal mode itself; changing it by
+          // hand breaks its transactions, so it is left alone.)
           await db.rawQuery('PRAGMA busy_timeout=5000');
         },
         onCreate: (db, _) async {
-          final batch = db.batch()
-            ..execute('''
-              CREATE TABLE reminders (
-                id TEXT PRIMARY KEY,
-                data TEXT NOT NULL,
-                due_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL,
-                deleted INTEGER NOT NULL DEFAULT 0
-              )''')
-            ..execute('''
-              CREATE TABLE events (
-                id TEXT PRIMARY KEY,
-                reminder_id TEXT NOT NULL,
-                data TEXT NOT NULL,
-                occurred_at INTEGER NOT NULL
-              )''')
-            ..execute('CREATE INDEX events_by_reminder ON events(reminder_id)')
-            ..execute('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)');
-          await batch.commit(noResult: true);
+          // IF NOT EXISTS: two isolates may race to create a fresh database.
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS reminders (
+              id TEXT PRIMARY KEY,
+              data TEXT NOT NULL,
+              due_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL,
+              deleted INTEGER NOT NULL DEFAULT 0
+            )''');
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS events (
+              id TEXT PRIMARY KEY,
+              reminder_id TEXT NOT NULL,
+              data TEXT NOT NULL,
+              occurred_at INTEGER NOT NULL
+            )''');
+          await db.execute(
+            'CREATE INDEX IF NOT EXISTS events_by_reminder ON events(reminder_id)',
+          );
+          await db.execute(
+            'CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)',
+          );
         },
       ),
     );
@@ -424,10 +428,11 @@ class SqliteReminderStore implements ReminderStore {
           'occurred_at': e.occurredAt.millisecondsSinceEpoch,
         }, conflictAlgorithm: ConflictAlgorithm.ignore);
       }
+      // Another isolate may finish the same migration first.
       batch.insert('meta', {
         'key': _metaLegacyMigrated,
         'value': DateTime.now().toIso8601String(),
-      });
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
       await batch.commit(noResult: true);
     });
     if (reminders.isNotEmpty || events.isNotEmpty) {

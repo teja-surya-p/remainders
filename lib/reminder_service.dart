@@ -5,9 +5,9 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'date_math.dart';
 import 'reminder_model.dart';
 import 'reminder_sounds.dart';
-import 'reminder_store.dart';
 import 'repeat_utils.dart';
 import 'scheduling/alert_payload.dart';
+import 'storage/sqlite_reminder_store.dart';
 import 'subscription_service.dart';
 
 class PremiumRequiredException implements Exception {
@@ -148,19 +148,22 @@ class ReminderService {
 
   StreamSubscription<List<ReminderModel>>? _activeReminderSub;
   StreamSubscription<List<ReminderEvent>>? _activeEventSub;
-  bool _listeningSubscription = false;
 
-  LocalReminderStore? _local;
-  CloudReminderStore? _cloud;
-  User? _user;
+  /// The device's reminders (SQLite): the source of truth for everyone,
+  /// signed in or not. The cloud is only a backup.
+  SqliteReminderStore? _store;
+  Future<void>? _initializing;
+
+  /// Signed-in account, used only for backup. Null when signed out.
+  User? _account;
 
   List<ReminderModel> _currentReminders = const [];
   List<ReminderEvent> _currentEvents = const [];
 
-  bool _modePremium = false;
-  bool _cloudSyncEnabled = false;
+  /// Premium features (advanced repeats, analytics, …).
+  bool get isPremiumMode => subscription.isPremium;
 
-  bool get isPremiumMode => _modePremium;
+  User? get account => _account;
 
   Stream<List<ReminderModel>> watchReminders() async* {
     yield List.unmodifiable(_currentReminders);
@@ -175,86 +178,47 @@ class ReminderService {
   List<ReminderModel> get currentReminders =>
       List.unmodifiable(_currentReminders);
 
-  Future<void> bindUser(User user) async {
-    _user = user;
+  /// Opens the device database. Safe to call more than once and from any
+  /// isolate: the app, the notification-action handler and the background
+  /// re-arm job all call it, and none of them needs an account.
+  Future<void> initialize({SqliteReminderStore? store}) =>
+      _initializing ??= _initialize(store ?? SqliteReminderStore());
 
-    await _activeReminderSub?.cancel();
-    await _activeEventSub?.cancel();
-    await _local?.dispose();
-    await _cloud?.dispose();
-
-    _local = LocalReminderStore(uid: user.uid);
-    _cloud = CloudReminderStore(uid: user.uid);
-    await _local!.initialize();
-    await _cloud!.initialize();
-
-    _modePremium = subscription.isPremium;
-    _cloudSyncEnabled = subscription.shouldUseCloudSync;
-
-    if (_cloudSyncEnabled) {
-      // Merge local history into cloud on sign-in if premium is already active.
-      await _syncLocalToCloud();
-      // Keep device cache aligned with cloud after upload.
-      await _syncCloudToLocal();
-    }
-
-    await _attachActiveStreams();
-
-    if (!_listeningSubscription) {
-      subscription.state.addListener(_onSubscriptionChanged);
-      _listeningSubscription = true;
-    }
+  Future<void> _initialize(SqliteReminderStore store) async {
+    await store.initialize();
+    _store = store;
+    await _attachStreams();
   }
 
-  void _onSubscriptionChanged() {
-    unawaited(_handleModeTransition());
+  /// Links the signed-in account for backup, or unlinks it (null) on
+  /// sign-out. Reminders stay on the device either way.
+  Future<void> attachAccount(User? user) async {
+    if (user?.uid == _account?.uid) return;
+    _account = user;
   }
 
-  Future<void> _handleModeTransition() async {
-    if (_user == null) return;
-    final shouldBePremium = subscription.isPremium;
-    final shouldUseCloud = subscription.shouldUseCloudSync;
-
-    final premiumChanged = shouldBePremium != _modePremium;
-    final cloudChanged = shouldUseCloud != _cloudSyncEnabled;
-
-    if (!premiumChanged && !cloudChanged) return;
-
-    if (cloudChanged) {
-      if (shouldUseCloud) {
-        await _syncLocalToCloud();
-      } else {
-        await _syncCloudToLocal();
-      }
-      _cloudSyncEnabled = shouldUseCloud;
-      await _attachActiveStreams();
-    }
-
-    _modePremium = shouldBePremium;
-  }
-
-  Future<void> _attachActiveStreams() async {
+  Future<void> _attachStreams() async {
     await _activeReminderSub?.cancel();
     await _activeEventSub?.cancel();
 
-    final active = _activeStoreOrThrow();
+    final store = _activeStoreOrThrow();
 
-    _activeReminderSub = active.watchReminders().listen((items) {
+    _activeReminderSub = store.watchReminders().listen((items) {
       _currentReminders = List.unmodifiable(items);
       if (!_remindersController.isClosed) {
         _remindersController.add(_currentReminders);
       }
     });
 
-    _activeEventSub = active.watchEvents().listen((items) {
+    _activeEventSub = store.watchEvents().listen((items) {
       _currentEvents = List.unmodifiable(items);
       if (!_eventsController.isClosed) {
         _eventsController.add(_currentEvents);
       }
     });
 
-    _currentReminders = await active.listReminders();
-    _currentEvents = await active.listEvents();
+    _currentReminders = await store.listReminders();
+    _currentEvents = await store.listEvents();
 
     if (!_remindersController.isClosed) {
       _remindersController.add(_currentReminders);
@@ -264,30 +228,12 @@ class ReminderService {
     }
   }
 
-  Future<void> unbindUser() async {
-    _user = null;
+  Future<void> dispose() async {
     await _activeReminderSub?.cancel();
     await _activeEventSub?.cancel();
-    _activeReminderSub = null;
-    _activeEventSub = null;
-    _currentReminders = const [];
-    _currentEvents = const [];
-    _modePremium = false;
-    _cloudSyncEnabled = false;
-
-    await _local?.dispose();
-    await _cloud?.dispose();
-    _local = null;
-    _cloud = null;
-
-    if (_listeningSubscription) {
-      subscription.state.removeListener(_onSubscriptionChanged);
-      _listeningSubscription = false;
-    }
-  }
-
-  Future<void> dispose() async {
-    await unbindUser();
+    await _store?.dispose();
+    _store = null;
+    _initializing = null;
     await _remindersController.close();
     await _eventsController.close();
   }
@@ -307,13 +253,13 @@ class ReminderService {
     return count;
   }
 
-  /// Picks up changes another isolate saved (see LocalReminderStore.reload).
+  /// Picks up changes another isolate saved while the app was in the
+  /// background (see SqliteReminderStore.reload).
   Future<void> reloadLocal() async {
-    await _local?.reload();
+    await _store?.reload();
   }
 
   Future<List<ReminderModel>> listReminders() async {
-    _requireSignedIn();
     return _activeStoreOrThrow().listReminders();
   }
 
@@ -331,8 +277,6 @@ class ReminderService {
     String? alarmSoundId,
     String? notificationSoundId,
   }) async {
-    _requireSignedIn();
-
     final trimmedTitle = title.trim();
     if (trimmedTitle.isEmpty) {
       throw const ReminderValidationException('Reminder name is required.');
@@ -389,7 +333,6 @@ class ReminderService {
   }
 
   Future<ReminderModel> updateReminder(ReminderModel reminder) async {
-    _requireSignedIn();
     final title = reminder.title.trim();
     if (title.isEmpty) {
       throw const ReminderValidationException('Reminder name is required.');
@@ -434,12 +377,7 @@ class ReminderService {
   }
 
   Future<void> deleteReminder(String id) async {
-    _requireSignedIn();
     await _activeStoreOrThrow().deleteReminder(id);
-
-    if (_modePremium) {
-      await _local?.deleteReminder(id);
-    }
   }
 
   /// [expectedDueAt] is the occurrence the user is answering (from the alarm
@@ -452,8 +390,6 @@ class ReminderService {
     String? platform,
     DateTime? expectedDueAt,
   }) async {
-    _requireSignedIn();
-
     final reminder = await _activeStoreOrThrow().getReminder(reminderId);
     if (reminder == null) return;
     if (_alreadyAnswered(reminder, expectedDueAt)) return;
@@ -500,8 +436,6 @@ class ReminderService {
     String reminderId, {
     DateTime? expectedDueAt,
   }) async {
-    _requireSignedIn();
-
     final reminder = await _activeStoreOrThrow().getReminder(reminderId);
     if (reminder == null) return;
     if (_alreadyAnswered(reminder, expectedDueAt)) return;
@@ -581,8 +515,6 @@ class ReminderService {
   }
 
   Future<void> markReminderMissedOrAdvance(String reminderId) async {
-    _requireSignedIn();
-
     final reminder = await _activeStoreOrThrow().getReminder(reminderId);
     if (reminder == null) return;
     final now = DateTime.now();
@@ -640,7 +572,7 @@ class ReminderService {
   }
 
   Future<void> recoverStreak(String reminderId) async {
-    if (!_modePremium) {
+    if (!isPremiumMode) {
       throw const PremiumRequiredException(
         feature: 'streak_recovery',
         message: 'Premium required for streak recovery.',
@@ -676,7 +608,7 @@ class ReminderService {
   }
 
   Future<void> applySuggestion(String reminderId) async {
-    if (!_modePremium) {
+    if (!isPremiumMode) {
       throw const PremiumRequiredException(
         feature: 'smart_scheduling',
         message: 'Premium required to auto-adjust schedules.',
@@ -1072,62 +1004,12 @@ class ReminderService {
     await _writeReminder(updated);
   }
 
-  Future<void> _syncLocalToCloud() async {
-    final local = _local;
-    final cloud = _cloud;
-    if (local == null || cloud == null) return;
-
-    final reminders = await local.listReminders();
-    final events = await local.listEvents();
-
-    await cloud.upsertReminders(reminders);
-    await cloud.upsertEvents(events);
-  }
-
-  Future<void> _syncCloudToLocal() async {
-    final local = _local;
-    final cloud = _cloud;
-    if (local == null || cloud == null) return;
-
-    final reminders = await cloud.listReminders();
-    final events = await cloud.listEvents();
-
-    await local.upsertReminders(reminders);
-    await local.upsertEvents(events);
-  }
-
   Future<void> _writeReminder(ReminderModel reminder) async {
-    final active = _activeStoreOrThrow();
-    try {
-      await active.upsertReminder(reminder);
-    } catch (e) {
-      throw StateError(
-        _cloudSyncEnabled
-            ? 'Failed to write reminder to Firestore: $e'
-            : 'Failed to write reminder to local storage: $e',
-      );
-    }
-
-    if (_cloudSyncEnabled) {
-      await _local?.upsertReminder(reminder);
-    }
+    await _activeStoreOrThrow().upsertReminder(reminder);
   }
 
   Future<void> _writeEvent(ReminderEvent event) async {
-    final active = _activeStoreOrThrow();
-    try {
-      await active.upsertEvent(event);
-    } catch (e) {
-      throw StateError(
-        _cloudSyncEnabled
-            ? 'Failed to write reminder event to Firestore: $e'
-            : 'Failed to write reminder event to local storage: $e',
-      );
-    }
-
-    if (_cloudSyncEnabled) {
-      await _local?.upsertEvent(event);
-    }
+    await _activeStoreOrThrow().upsertEvent(event);
   }
 
   bool _alreadyAnswered(ReminderModel reminder, DateTime? expectedDueAt) {
@@ -1135,32 +1017,19 @@ class ReminderService {
     return !reminder.isActive || !sameMinute(reminder.dueAt, expectedDueAt);
   }
 
-  ReminderStore _activeStoreOrThrow() {
-    if (_cloudSyncEnabled) {
-      final cloud = _cloud;
-      if (cloud == null) {
-        throw StateError('Cloud store unavailable.');
-      }
-      return cloud;
+  SqliteReminderStore _activeStoreOrThrow() {
+    final store = _store;
+    if (store == null) {
+      throw StateError('Reminders are not ready yet.');
     }
-    final local = _local;
-    if (local == null) {
-      throw StateError('Local store unavailable.');
-    }
-    return local;
-  }
-
-  void _requireSignedIn() {
-    if (_user == null) {
-      throw StateError('You must sign in first.');
-    }
+    return store;
   }
 
   Future<void> _enforceFreeReminderLimitOrThrow(
     DateTime dueAt, {
     String? editingId,
   }) async {
-    if (_modePremium) return;
+    if (isPremiumMode) return;
 
     final count = await countActiveRemindersForDay(
       dueAt,
@@ -1224,7 +1093,7 @@ class ReminderService {
       throw const ReminderValidationException('At least one time is required.');
     }
 
-    if (!_modePremium) {
+    if (!isPremiumMode) {
       final freeAllowed =
           recurrence.type == RepeatType.daily ||
           recurrence.type == RepeatType.weekly;

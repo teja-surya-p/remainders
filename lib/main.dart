@@ -10,7 +10,6 @@ import 'background/rearm_job.dart';
 import 'components/common/app_loading.dart';
 import 'firebase_options.dart';
 import 'notifs.dart';
-import 'pages/auth_page.dart';
 import 'pages/home_page.dart';
 import 'reminder_scheduler.dart';
 import 'snooze_handler.dart';
@@ -61,6 +60,7 @@ class _BootstrapState extends State<_Bootstrap> {
   }
 
   Future<void> _initialize() async {
+    // Works offline; only the optional sign-in and backup use it.
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     ).timeout(
@@ -78,7 +78,7 @@ class _BootstrapState extends State<_Bootstrap> {
     try {
       await Notifs.init(
         onAction: (r) {
-          SnoozeHandler.handle(r, openCustomUi: true);
+          unawaited(SnoozeHandler.handle(r, openCustomUi: true));
         },
         onBackgroundAction: notificationTapBackground,
       ).timeout(const Duration(seconds: 8));
@@ -93,6 +93,13 @@ class _BootstrapState extends State<_Bootstrap> {
     } catch (e) {
       debugPrint('Background re-arm jobs not registered: $e');
     }
+
+    // Reminders live on the device and need no account: start the alarm
+    // engine right away, signed in or not.
+    ReminderScheduler.configure(AppServices.reminders);
+    await ReminderScheduler.start();
+    AlarmPopupService.configure(AppServices.reminders);
+    await AlarmPopupService.start();
   }
 
   void _retryInit() {
@@ -139,44 +146,57 @@ class _BootstrapState extends State<_Bootstrap> {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             final r = Notifs.takePendingLaunchResponse();
             if (r != null) {
-              SnoozeHandler.handle(r, openCustomUi: true);
+              unawaited(SnoozeHandler.handle(r, openCustomUi: true));
             }
           });
         }
 
-        return const _AuthGate();
+        return const _AppShell();
       },
     );
   }
 }
 
-class _AuthGate extends StatefulWidget {
-  const _AuthGate();
+/// The running app: always the home screen. Signing in (optional) only turns
+/// on backup; it never blocks the reminders.
+class _AppShell extends StatefulWidget {
+  const _AppShell();
 
   @override
-  State<_AuthGate> createState() => _AuthGateState();
+  State<_AppShell> createState() => _AppShellState();
 }
 
-class _AuthGateState extends State<_AuthGate> with WidgetsBindingObserver {
-  String? _activeUid;
-  Future<void>? _bindFuture;
-  bool _bound = false;
+class _AppShellState extends State<_AppShell> with WidgetsBindingObserver {
+  StreamSubscription<User?>? _authSub;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _authSub = FirebaseAuth.instance.authStateChanges().listen(
+      (user) => unawaited(_onAccountChanged(user)),
+    );
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    unawaited(_authSub?.cancel());
     super.dispose();
+  }
+
+  Future<void> _onAccountChanged(User? user) async {
+    try {
+      await AppServices.attachAccount(user);
+      if (user != null) await UserStore.saveUser(user);
+    } catch (e) {
+      debugPrint('Updating the account failed: $e');
+    }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && _bound) {
+    if (state == AppLifecycleState.resumed) {
       unawaited(_refreshAfterResume());
     }
   }
@@ -192,108 +212,6 @@ class _AuthGateState extends State<_AuthGate> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _bind(User user) async {
-    await AppServices.bindUser(user).timeout(
-      const Duration(seconds: 15),
-      onTimeout: () =>
-          throw TimeoutException('User binding timed out while loading data.'),
-    );
-    await UserStore.saveUser(user).timeout(
-      const Duration(seconds: 5),
-      onTimeout: () =>
-          throw TimeoutException('Failed to persist user session.'),
-    );
-
-    ReminderScheduler.configure(AppServices.reminders);
-    await ReminderScheduler.start().timeout(
-      const Duration(seconds: 8),
-      onTimeout: () =>
-          throw TimeoutException('Reminder scheduler start timed out.'),
-    );
-    AlarmPopupService.configure(AppServices.reminders);
-    await AlarmPopupService.start().timeout(
-      const Duration(seconds: 8),
-      onTimeout: () =>
-          throw TimeoutException('Alarm popup service start timed out.'),
-    );
-    _bound = true;
-  }
-
-  Future<void> _unbind() async {
-    _bound = false;
-    await AlarmPopupService.stop();
-    // Signed out: none of this account's alarms may ring any more.
-    await ReminderScheduler.stopAndCancelAll();
-    await AppServices.unbindUser();
-  }
-
-  Future<void> _ensureBound(User user) {
-    if (_activeUid == user.uid && _bindFuture != null) {
-      return _bindFuture!;
-    }
-    _activeUid = user.uid;
-    _bindFuture = _bind(user);
-    return _bindFuture!;
-  }
-
   @override
-  Widget build(BuildContext context) {
-    return StreamBuilder<User?>(
-      stream: FirebaseAuth.instance.authStateChanges(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const AppLoadingScaffold(label: 'Checking account...');
-        }
-
-        final user = snapshot.data;
-        if (user == null) {
-          if (_activeUid != null) {
-            _activeUid = null;
-            _bindFuture = null;
-            _unbind();
-          }
-          return const SignInPage();
-        }
-
-        return FutureBuilder<void>(
-          future: _ensureBound(user),
-          builder: (context, bindSnapshot) {
-            if (bindSnapshot.connectionState != ConnectionState.done) {
-              return const AppLoadingScaffold(
-                label: 'Loading your reminders...',
-              );
-            }
-            if (bindSnapshot.hasError) {
-              return Scaffold(
-                body: Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          'Bind error: ${bindSnapshot.error}',
-                          textAlign: TextAlign.center,
-                        ),
-                        const SizedBox(height: 12),
-                        FilledButton(
-                          onPressed: () {
-                            setState(() {
-                              _bindFuture = null;
-                            });
-                          },
-                          child: const Text('Retry'),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              );
-            }
-            return const HomePage();
-          },
-        );
-      },
-    );
-  }
+  Widget build(BuildContext context) => const HomePage();
 }
