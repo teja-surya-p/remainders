@@ -1,4 +1,5 @@
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 
 import 'reminder_service.dart';
 import 'subscription_service.dart';
@@ -31,11 +32,17 @@ class AppServices {
   /// Called when the user signs in (backup on) or out (null). Reminders stay
   /// on the device either way.
   static Future<void> attachAccount(User? user) async {
-    if (user == null) {
-      await subscription.unbindUser();
-    } else {
-      await subscription.bindAuthenticatedUser(user);
-    }
+    // Backup first: it must not depend on the purchases service being
+    // reachable.
     await reminders.attachAccount(user);
+    try {
+      if (user == null) {
+        await subscription.unbindUser();
+      } else {
+        await subscription.bindAuthenticatedUser(user);
+      }
+    } catch (e) {
+      debugPrint('Purchases account not updated: $e');
+    }
   }
 }

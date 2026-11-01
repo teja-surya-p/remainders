@@ -85,6 +85,18 @@ void main() {
     },
   );
 
+  ReminderRecord copy(
+    ReminderModel? r, {
+    String? id,
+    required DateTime updatedAt,
+    bool deleted = false,
+  }) => ReminderRecord(
+    id: id ?? r!.id,
+    reminder: r,
+    updatedAt: updatedAt,
+    deleted: deleted,
+  );
+
   group('applyRemote', () {
     test('a newer backup copy replaces the local one', () async {
       final store = await openStore();
@@ -95,22 +107,20 @@ void main() {
           updatedAt: DateTime(2026, 6, 1),
         ),
       );
-      final changed = await store.applyRemote(
-        id: 'a',
-        updatedAt: DateTime(2026, 6, 2),
-        deleted: false,
-        reminder: reminder(
-          'a',
-          dueAt: DateTime(2026, 6, 12, 9),
-          title: 'Renamed',
+      final changed = await store.applyRemote([
+        copy(
+          reminder('a', dueAt: DateTime(2026, 6, 12, 9), title: 'Renamed'),
+          updatedAt: DateTime(2026, 6, 2),
         ),
-      );
-      expect(changed, isTrue);
+      ]);
+      expect(changed, 1);
       expect((await store.getReminder('a'))!.title, 'Renamed');
+      // It came from the backup, so there is nothing to upload.
+      expect(await store.listDirtyReminders(), isEmpty);
       await store.dispose();
     });
 
-    test('an older backup copy is ignored', () async {
+    test('an older backup copy is ignored and ours is re-uploaded', () async {
       final store = await openStore();
       await store.upsertReminder(
         reminder(
@@ -119,14 +129,18 @@ void main() {
           updatedAt: DateTime(2026, 6, 5),
         ),
       );
-      final changed = await store.applyRemote(
-        id: 'a',
-        updatedAt: DateTime(2026, 6, 2),
-        deleted: false,
-        reminder: reminder('a', dueAt: DateTime(2026, 6, 12, 9), title: 'Old'),
-      );
-      expect(changed, isFalse);
+      final dirty = (await store.listDirtyReminders()).single.dirty;
+      await store.markRemindersClean({'a': dirty});
+
+      final changed = await store.applyRemote([
+        copy(
+          reminder('a', dueAt: DateTime(2026, 6, 12, 9), title: 'Old'),
+          updatedAt: DateTime(2026, 6, 2),
+        ),
+      ]);
+      expect(changed, 0);
       expect((await store.getReminder('a'))!.title, 'Take medicine');
+      expect((await store.listDirtyReminders()).single.id, 'a');
       await store.dispose();
     });
 
@@ -139,26 +153,139 @@ void main() {
           updatedAt: DateTime(2026, 6, 1),
         ),
       );
-      await store.applyRemote(
-        id: 'a',
-        updatedAt: DateTime(2026, 6, 3),
-        deleted: true,
-      );
+      await store.applyRemote([
+        copy(null, id: 'a', updatedAt: DateTime(2026, 6, 3), deleted: true),
+      ]);
       expect(await store.listReminders(), isEmpty);
       await store.dispose();
     });
 
+    test(
+      'a deletion for a reminder this device never had is ignored',
+      () async {
+        final store = await openStore();
+        final changed = await store.applyRemote([
+          copy(null, id: 'x', updatedAt: DateTime(2026, 6, 3), deleted: true),
+        ]);
+        expect(changed, 0);
+        expect(await store.listAllRows(), isEmpty);
+        await store.dispose();
+      },
+    );
+
     test('a reminder only in the backup is restored', () async {
       final store = await openStore();
-      await store.applyRemote(
-        id: 'z',
-        updatedAt: DateTime(2026, 6, 3),
-        deleted: false,
-        reminder: reminder('z', dueAt: DateTime(2026, 6, 10, 9)),
-      );
+      await store.applyRemote([
+        copy(
+          reminder('z', dueAt: DateTime(2026, 6, 10, 9)),
+          updatedAt: DateTime(2026, 6, 3),
+        ),
+      ]);
       expect((await store.listReminders()).single.id, 'z');
       await store.dispose();
     });
+  });
+
+  group('backup tracking', () {
+    test('every local change needs uploading until confirmed', () async {
+      final store = await openStore();
+      final a = reminder('a', dueAt: DateTime(2026, 6, 10, 9));
+      await store.upsertReminder(a);
+      await store.upsertEvent(event('e1', 'a', DateTime(2026, 6, 10, 9)));
+
+      final dirty = await store.listDirtyReminders();
+      expect(dirty.single.id, 'a');
+      final events = await store.listDirtyEvents();
+      expect(events.single.event.id, 'e1');
+
+      await store.markRemindersClean({'a': dirty.single.dirty});
+      await store.markEventsClean({'e1': events.single.dirty});
+      expect(await store.listDirtyReminders(), isEmpty);
+      expect(await store.listDirtyEvents(), isEmpty);
+
+      await store.deleteReminder('a');
+      final tombstone = (await store.listDirtyReminders()).single;
+      expect(tombstone.deleted, isTrue);
+      await store.dispose();
+    });
+
+    test('a late confirmation does not hide a newer change', () async {
+      final store = await openStore();
+      final a = reminder('a', dueAt: DateTime(2026, 6, 10, 9));
+      await store.upsertReminder(a);
+      final first = (await store.listDirtyReminders()).single.dirty;
+      await store.upsertReminder(a.copyWith(title: 'Edited'));
+      // The upload of the first version is confirmed after the edit.
+      await store.markRemindersClean({'a': first});
+      final still = (await store.listDirtyReminders()).single;
+      expect(still.reminder!.title, 'Edited');
+      await store.dispose();
+    });
+
+    test('tombstones are purged only once the backup has them', () async {
+      final store = await openStore();
+      await store.upsertReminder(reminder('a', dueAt: DateTime(2026, 6, 10)));
+      await store.deleteReminder('a');
+      await store.purgeTombstones(olderThan: Duration.zero);
+      expect(await store.listAllRows(), hasLength(1));
+
+      final stamp = (await store.listDirtyReminders()).single.dirty;
+      await store.markRemindersClean({'a': stamp});
+      await store.purgeTombstones(olderThan: const Duration(days: 60));
+      expect(await store.listAllRows(), hasLength(1));
+      await store.purgeTombstones(olderThan: Duration.zero);
+      expect(await store.listAllRows(), isEmpty);
+      await store.dispose();
+    });
+
+    test('meta values are written together and removed with null', () async {
+      final store = await openStore();
+      await store.writeMeta({'backup_x': '1', 'backup_y': '2'});
+      expect(await store.readMeta('backup_y'), '2');
+      await store.writeMeta({'backup_x': null});
+      expect(await store.readMeta('backup_x'), isNull);
+      await store.dispose();
+    });
+  });
+
+  test('a database from schema 1 is upgraded and backed up', () async {
+    final path = p.join(tmp.path, 'old.db');
+    final old = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(
+        version: 1,
+        singleInstance: false,
+        onCreate: (db, _) async {
+          await db.execute(
+            'CREATE TABLE reminders (id TEXT PRIMARY KEY, data TEXT NOT NULL, '
+            'due_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, '
+            'deleted INTEGER NOT NULL DEFAULT 0)',
+          );
+          await db.execute(
+            'CREATE TABLE events (id TEXT PRIMARY KEY, reminder_id TEXT NOT '
+            'NULL, data TEXT NOT NULL, occurred_at INTEGER NOT NULL)',
+          );
+          await db.execute(
+            'CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)',
+          );
+        },
+      ),
+    );
+    final a = reminder('a', dueAt: DateTime(2026, 6, 10, 9));
+    await old.insert('reminders', {
+      'id': 'a',
+      'data': jsonEncode(a.toJson()),
+      'due_at': a.dueAt.millisecondsSinceEpoch,
+      'updated_at': a.updatedAt.millisecondsSinceEpoch,
+      'deleted': 0,
+    });
+    await old.insert('meta', {'key': 'legacy_prefs_migrated', 'value': 'x'});
+    await old.close();
+
+    final store = await openStore(name: 'old.db');
+    expect((await store.listReminders()).single.id, 'a');
+    expect((await store.listDirtyReminders()).single.id, 'a');
+    await store.dispose();
   });
 
   test('one unreadable reminder is skipped, the rest still load', () async {
@@ -222,9 +349,11 @@ void main() {
     final store = await openStore();
     await store.upsertReminder(reminder('a', dueAt: DateTime(2026, 6, 10, 9)));
     await store.upsertEvent(event('e1', 'a', DateTime(2026, 6, 10, 9)));
+    await store.writeMeta({'backup_account': 'uid1'});
     await store.wipe();
     expect(await store.listAllRows(), isEmpty);
     expect(await store.listEvents(), isEmpty);
+    expect(await store.readMeta('backup_account'), isNull);
     await store.dispose();
   });
 }

@@ -1,12 +1,14 @@
 import 'dart:async';
 
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 
 import 'date_math.dart';
 import 'reminder_model.dart';
 import 'reminder_sounds.dart';
 import 'repeat_utils.dart';
 import 'scheduling/alert_payload.dart';
+import 'storage/reminder_backup.dart';
 import 'storage/sqlite_reminder_store.dart';
 import 'subscription_service.dart';
 
@@ -139,7 +141,13 @@ class ProductivityInsights {
 class ReminderService {
   final SubscriptionService subscription;
 
-  ReminderService({required this.subscription});
+  ReminderService({
+    required this.subscription,
+    RemoteReminderBackup Function(String uid)? remoteBackup,
+  }) : _remoteBackup =
+           remoteBackup ?? ((uid) => FirestoreReminderBackup(uid: uid));
+
+  final RemoteReminderBackup Function(String uid) _remoteBackup;
 
   final StreamController<List<ReminderModel>> _remindersController =
       StreamController<List<ReminderModel>>.broadcast();
@@ -156,6 +164,9 @@ class ReminderService {
 
   /// Signed-in account, used only for backup. Null when signed out.
   User? _account;
+
+  /// Backup of the device's reminders to the signed-in account.
+  ReminderBackup? _backup;
 
   List<ReminderModel> _currentReminders = const [];
   List<ReminderEvent> _currentEvents = const [];
@@ -195,6 +206,42 @@ class ReminderService {
   Future<void> attachAccount(User? user) async {
     if (user?.uid == _account?.uid) return;
     _account = user;
+    _backup?.dispose();
+    _backup = null;
+    if (user == null) return;
+
+    await initialize();
+    if (_account?.uid != user.uid) return; // changed again meanwhile
+    _backup = ReminderBackup(
+      uid: user.uid,
+      local: _activeStoreOrThrow(),
+      remote: _remoteBackup(user.uid),
+    );
+    unawaited(syncBackup(force: true));
+  }
+
+  /// True while signed in: the device's reminders are being backed up.
+  bool get isBackupOn => _backup != null;
+
+  /// Downloads changes made on other devices and uploads this device's.
+  /// Does nothing when signed out. Failures (e.g. offline) are only logged:
+  /// the next sync tries again, and nothing on the device is lost.
+  Future<BackupSyncResult?> syncBackup({bool force = false}) async {
+    final backup = _backup;
+    if (backup == null) return null;
+    try {
+      final result = await backup.syncNow(force: force);
+      if (result != null) {
+        debugPrint(
+          'Backup synced: ${result.pulled} downloaded, '
+          '${result.pushed} uploaded.',
+        );
+      }
+      return result;
+    } catch (e) {
+      debugPrint('Backup sync failed: $e');
+      return null;
+    }
   }
 
   Future<void> _attachStreams() async {
@@ -229,6 +276,8 @@ class ReminderService {
   }
 
   Future<void> dispose() async {
+    _backup?.dispose();
+    _backup = null;
     await _activeReminderSub?.cancel();
     await _activeEventSub?.cancel();
     await _store?.dispose();
@@ -254,9 +303,10 @@ class ReminderService {
   }
 
   /// Picks up changes another isolate saved while the app was in the
-  /// background (see SqliteReminderStore.reload).
+  /// background (see SqliteReminderStore.reload), then syncs the backup.
   Future<void> reloadLocal() async {
     await _store?.reload();
+    unawaited(syncBackup());
   }
 
   Future<List<ReminderModel>> listReminders() async {
@@ -378,6 +428,7 @@ class ReminderService {
 
   Future<void> deleteReminder(String id) async {
     await _activeStoreOrThrow().deleteReminder(id);
+    _backup?.schedulePush();
   }
 
   /// [expectedDueAt] is the occurrence the user is answering (from the alarm
@@ -1006,10 +1057,12 @@ class ReminderService {
 
   Future<void> _writeReminder(ReminderModel reminder) async {
     await _activeStoreOrThrow().upsertReminder(reminder);
+    _backup?.schedulePush();
   }
 
   Future<void> _writeEvent(ReminderEvent event) async {
     await _activeStoreOrThrow().upsertEvent(event);
+    _backup?.schedulePush();
   }
 
   bool _alreadyAnswered(ReminderModel reminder, DateTime? expectedDueAt) {
