@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import '../app_services.dart';
 import '../components/common/app_loading.dart';
 import '../components/common/app_ui.dart';
+import '../components/permissions/alarm_permission_prompt.dart';
 import '../components/reminders/reminder_editor_dialog.dart';
 import '../components/reminders/reminder_tile.dart';
 import '../reminder_model.dart';
@@ -164,6 +165,7 @@ class _ReminderListTabState extends State<_ReminderListTab> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('Reminder added')));
+      await AlarmPermissionPrompt.maybeAsk(context);
     }
   }
 
