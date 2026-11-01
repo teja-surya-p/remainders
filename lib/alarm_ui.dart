@@ -33,16 +33,8 @@ class AlarmUi {
         : stableNotificationId(reminderId, occurrence, AlertKind.alarm);
     _showing[reminderId] = notificationId;
 
-    // The screen plays the alarm itself; stop the ringing notification so the
-    // two sounds don't overlap.
-    if (notificationId != null) {
-      try {
-        await Notifs.cancel(notificationId);
-      } catch (e) {
-        debugPrint('Could not silence alarm notification: $e');
-      }
-    }
-
+    // The alarm screen silences the ringing notification once its own sound
+    // is playing (not before), so the alarm is never silent.
     try {
       await nav.push(
         MaterialPageRoute<void>(

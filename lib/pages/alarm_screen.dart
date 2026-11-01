@@ -8,9 +8,11 @@ import '../alarm_player.dart';
 import '../alarm_vibration.dart';
 import '../app_services.dart';
 import '../components/common/app_ui.dart';
+import '../notifs.dart';
 import '../platform/lock_screen.dart';
 import '../reminder_model.dart';
 import '../reminder_scheduler.dart';
+import '../scheduling/alert_payload.dart';
 import '../theme/app_motion.dart';
 import '../theme/app_tokens.dart';
 
@@ -67,9 +69,32 @@ class _AlarmScreenState extends State<AlarmScreen>
         widget.reminderId,
       );
       alarmSoundId = reminder?.alarmSoundId;
-    } catch (_) {}
-    await AlarmPlayer.start(alarmSoundId: alarmSoundId);
+    } catch (e) {
+      debugPrint('Could not load the alarm sound choice: $e');
+    }
+    var playing = false;
+    try {
+      playing = await AlarmPlayer.start(alarmSoundId: alarmSoundId);
+    } catch (e) {
+      debugPrint('Alarm sound failed to start: $e');
+    }
+    // Hand the ringing over from the notification to this screen only once
+    // the screen's own sound is really playing; otherwise the notification
+    // keeps ringing.
+    if (playing) await _silenceNotification();
     await AlarmVibration.start();
+  }
+
+  Future<void> _silenceNotification() async {
+    final occurrence = widget.occurrence;
+    if (occurrence == null) return;
+    try {
+      await Notifs.cancel(
+        stableNotificationId(widget.reminderId, occurrence, AlertKind.alarm),
+      );
+    } catch (e) {
+      debugPrint('Could not silence the alarm notification: $e');
+    }
   }
 
   /// Time left in this occurrence's ring window (at least a minute).
@@ -95,6 +120,7 @@ class _AlarmScreenState extends State<AlarmScreen>
     _ringTimeout?.cancel();
     await AlarmPlayer.stop();
     await AlarmVibration.stop();
+    await _silenceNotification();
   }
 
   Future<void> _stop() async {

@@ -9,9 +9,14 @@ class AlarmPlayer {
   static bool _started = false;
   static String? _activeSoundId;
 
-  static Future<void> start({String? alarmSoundId}) async {
+  /// Starts the looping alarm sound. Returns true once playback is actually
+  /// running, false if it did not start within a few seconds — callers keep
+  /// the notification ringing in that case, so an alarm is never silent.
+  static Future<bool> start({String? alarmSoundId}) async {
     final sound = ReminderSounds.alarmById(alarmSoundId);
-    if (_started && _activeSoundId == sound.id) return;
+    if (_started && _activeSoundId == sound.id) {
+      return _player.state == PlayerState.playing;
+    }
 
     _started = true;
     _activeSoundId = sound.id;
@@ -29,6 +34,15 @@ class AlarmPlayer {
     await _player.setReleaseMode(ReleaseMode.loop);
     await _player.stop();
     await _player.play(AssetSource(sound.assetSourcePath), volume: 1.0);
+    if (_player.state == PlayerState.playing) return true;
+    try {
+      await _player.onPlayerStateChanged
+          .firstWhere((s) => s == PlayerState.playing)
+          .timeout(const Duration(seconds: 3));
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   static Future<void> stop() async {
