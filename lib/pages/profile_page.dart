@@ -7,6 +7,7 @@ import '../components/common/app_ui.dart';
 import '../subscription_service.dart';
 import '../theme/app_tokens.dart';
 import '../theme/theme_service.dart';
+import 'legal_pages.dart';
 import 'sharing_page.dart';
 import 'subscription_page.dart';
 
@@ -260,6 +261,24 @@ class _ProfileBody extends StatelessWidget {
                   );
                 }
               },
+            ),
+            _MenuTile(
+              icon: Icons.privacy_tip_outlined,
+              iconColor: tone.mutedText,
+              iconBg: tone.mutedText.withValues(alpha: 0.12),
+              label: 'Privacy policy',
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(builder: (_) => const PrivacyPage()),
+              ),
+            ),
+            _MenuTile(
+              icon: Icons.description_outlined,
+              iconColor: tone.mutedText,
+              iconBg: tone.mutedText.withValues(alpha: 0.12),
+              label: 'Terms of service',
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(builder: (_) => const TermsPage()),
+              ),
             ),
             if (user != null) ...[
               const SizedBox(height: 10),

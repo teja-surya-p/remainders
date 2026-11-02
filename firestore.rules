@@ -13,20 +13,64 @@ service cloud.firestore {
       return signedIn() && (request.auth.uid in uids);
     }
 
+    // Set by the server on every write, so later syncs can ask only for
+    // documents changed since the last one (lib/storage/reminder_backup.dart).
+    function stampedByServer() {
+      return request.resource.data.serverUpdatedAt == request.time;
+    }
+
+    // Newer copy wins: a write may not replace a newer version of the same
+    // reminder. Re-sending the same version is fine.
+    function notOlderThanStored() {
+      return resource == null
+        || !('updatedAt' in resource.data)
+        || request.resource.data.updatedAt >= resource.data.updatedAt;
+    }
+
+    // A reminder, or a deletion marker that keeps no reminder content.
+    function validReminder(d) {
+      return d.updatedAt is timestamp
+        && d.size() <= 40
+        && (d.get('deleted', false) == true
+          ? d.keys().hasOnly(['deleted', 'updatedAt', 'serverUpdatedAt'])
+          : d.dueAt is timestamp
+            && d.title is string && d.title.size() <= 500
+            && (d.get('description', null) == null
+              || (d.description is string && d.description.size() <= 5000)));
+    }
+
+    function validEvent(d) {
+      return d.occurredAt is timestamp
+        && d.scheduledAt is timestamp
+        && d.reminderId is string && d.reminderId.size() <= 200
+        && d.type in ['completed', 'snoozed', 'missed']
+        && d.size() <= 10;
+    }
+
     match /users/{uid} {
       allow read, write: if isOwner(uid);
     }
 
-    // Reminder data is scoped strictly per authenticated owner UID.
-    // Premium enforcement is handled in app logic.
+    // The backup: each account reads and writes only its own reminders.
     match /users/{uid}/reminders/{reminderId} {
-      allow read, write: if isOwner(uid);
+      allow read, delete: if isOwner(uid);
+      allow create, update: if isOwner(uid)
+        && reminderId.size() <= 200
+        && stampedByServer()
+        && validReminder(request.resource.data)
+        && notOlderThanStored();
     }
 
     match /users/{uid}/reminderEvents/{eventId} {
-      allow read, write: if isOwner(uid);
+      allow read, delete: if isOwner(uid);
+      allow create, update: if isOwner(uid)
+        && eventId.size() <= 200
+        && stampedByServer()
+        && validEvent(request.resource.data);
     }
 
+    // Sharing (off in v1). Account deletion removes the account's own
+    // shared reminders and takes it out of the others.
     match /sharedReminders/{sharedReminderId} {
       allow create: if signedIn()
         && request.resource.data.ownerUid == request.auth.uid
