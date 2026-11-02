@@ -123,11 +123,15 @@ class _SignInPageState extends State<SignInPage> {
       }
       _done();
     } on PlatformException catch (e) {
-      setState(() => _error = _friendlyGoogleError(e));
+      debugPrint('Google sign-in failed: $e');
+      setState(() => _error = 'Google sign-in failed. Please try again.');
+    } on GoogleAuthException catch (e) {
+      setState(() => _error = e.message);
     } on FirebaseAuthException catch (e) {
       setState(() => _error = e.message ?? 'Google sign-in failed.');
     } catch (e) {
-      setState(() => _error = 'Google sign-in failed: $e');
+      debugPrint('Google sign-in failed: $e');
+      setState(() => _error = 'Google sign-in failed. Please try again.');
     } finally {
       if (mounted) {
         setState(() => _loading = false);
@@ -168,20 +172,6 @@ class _SignInPageState extends State<SignInPage> {
         setState(() => _loading = false);
       }
     }
-  }
-
-  String _friendlyGoogleError(PlatformException e) {
-    final message = (e.message ?? '').toLowerCase();
-    final isApi10 =
-        e.code == 'sign_in_failed' &&
-        (message.contains('apiexception: 10') ||
-            message.contains('developer_error'));
-    if (isApi10) {
-      return 'Google Sign-In is not configured for this Android signing key yet. '
-          'Add your SHA-1 in Firebase (Project Settings > Android app), '
-          'download updated google-services.json, then rebuild.';
-    }
-    return 'Google sign-in failed: ${e.message ?? e.code}';
   }
 
   String? _validateEmail(String email) {

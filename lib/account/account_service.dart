@@ -58,7 +58,11 @@ class AccountService {
 
     AuthCredential? credential;
     if (providers.contains(GoogleAuthProvider.PROVIDER_ID)) {
-      credential = await GoogleAuth.credential();
+      try {
+        credential = await GoogleAuth.credential();
+      } on GoogleAuthException catch (e) {
+        throw AccountException(e.message);
+      }
     } else if (providers.contains(EmailAuthProvider.PROVIDER_ID) &&
         email != null) {
       final password = await askPassword(email);

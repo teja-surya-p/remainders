@@ -39,7 +39,7 @@ dependencies:
   table_calendar: ^3.0.9
   firebase_core: ^4.4.0
   firebase_auth: ^6.1.4
-  google_sign_in: ^6.3.0
+  google_sign_in: ^7.2.0
   shared_preferences: ^2.3.2
   cloud_firestore: ^6.1.2
   intl: ^0.20.2
