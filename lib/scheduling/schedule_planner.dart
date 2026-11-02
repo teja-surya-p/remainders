@@ -102,7 +102,8 @@ ReminderPlan planReminder(
       : config.notifyCatchUp;
 
   // An occurrence whose window has passed is the service's job to resolve;
-  // the scheduler re-plans once the reminder has been updated.
+  // the scheduler resolves it, then plans the reminder again in the same
+  // sync.
   if (reminder.dueAt.isBefore(now.subtract(config.ringWindow))) {
     return const ReminderPlan(alerts: [], needsMissedOrAdvance: true);
   }

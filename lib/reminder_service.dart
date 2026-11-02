@@ -611,7 +611,9 @@ class ReminderService {
 
     await _writeEvent(
       ReminderEvent(
-        id: generateReminderId(),
+        // One per occurrence: if the app and its background job both record
+        // the same miss, the second write replaces the first.
+        id: 'missed_${reminderId}_${epochMinute(scheduledAt)}',
         reminderId: reminderId,
         type: ReminderEventType.missed,
         scheduledAt: scheduledAt,

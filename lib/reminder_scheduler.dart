@@ -109,10 +109,11 @@ class ReminderScheduler {
     ReminderService service,
     List<ReminderModel> reminders, {
     Set<String>? onlyReminderIds,
+    bool resolve = true,
   }) async {
     final now = DateTime.now();
     final desired = <int, PlannedAlert>{};
-    final toResolve = <String>[];
+    final toResolve = <String>{};
     for (final reminder in reminders) {
       try {
         final plan = planReminder(reminder, now, config: config);
@@ -140,12 +141,15 @@ class ReminderScheduler {
 
     final pendingIds = <int>{};
     for (final p in pending) {
-      if (onlyReminderIds != null &&
-          !onlyReminderIds.contains(p.payload?.reminderId)) {
+      final owner = p.payload?.reminderId;
+      if (onlyReminderIds != null && !onlyReminderIds.contains(owner)) {
         continue;
       }
       pendingIds.add(p.id);
       if (desired.containsKey(p.id)) continue;
+      // A reminder about to be moved on is reconciled once that's done
+      // (below), so its upcoming alarms don't disappear in between.
+      if (resolve && toResolve.contains(owner)) continue;
       await _guard('cancel stale alert ${p.id}', () => Notifs.cancel(p.id));
       _posted.remove(p.id);
     }
@@ -168,12 +172,27 @@ class ReminderScheduler {
       if (ok) _posted[alert.id] = alert.signature;
     }
 
+    if (!resolve || toResolve.isEmpty) return;
     for (final id in toResolve) {
       await _guard(
         'resolve missed reminder $id',
         () => service.markReminderMissedOrAdvance(id),
       );
     }
+    // Plan them again from the store now rather than wait for a change
+    // event: the background re-arm job has no live stream, and when another
+    // isolate (app vs. background job) already moved a reminder on,
+    // resolving changes nothing here, so no event would ever come.
+    final fresh = <ReminderModel>[];
+    for (final id in toResolve) {
+      try {
+        final reminder = await service.getReminder(id);
+        if (reminder != null) fresh.add(reminder);
+      } catch (e) {
+        debugPrint('Reading reminder $id failed: $e');
+      }
+    }
+    await _sync(service, fresh, onlyReminderIds: toResolve, resolve: false);
   }
 
   static Future<bool> _guard(String what, Future<void> Function() op) async {
