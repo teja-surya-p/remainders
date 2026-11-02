@@ -8,6 +8,7 @@ import 'alarm_popup_service.dart';
 import 'app_services.dart';
 import 'background/rearm_job.dart';
 import 'components/common/app_loading.dart';
+import 'crash_reporter.dart';
 import 'firebase_options.dart';
 import 'notifs.dart';
 import 'pages/home_page.dart';
@@ -68,6 +69,7 @@ class _BootstrapState extends State<_Bootstrap> {
       onTimeout: () =>
           throw TimeoutException('Firebase initialization timed out.'),
     );
+    await CrashReporter.init();
 
     await AppServices.initialize().timeout(
       const Duration(seconds: 12),

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import 'alarm_ui.dart';
+import 'crash_reporter.dart';
 import 'notifs.dart';
 import 'reminder_model.dart';
 import 'reminder_service.dart';
@@ -101,7 +102,7 @@ class ReminderScheduler {
   /// queue keeps going, so one bad reminder can't stop all scheduling.
   static void _enqueue(Future<void> Function() job) {
     _queue = _queue.then((_) => job()).catchError((Object e, StackTrace s) {
-      debugPrint('Reminder scheduling failed: $e\n$s');
+      CrashReporter.record(e, s, reason: 'Reminder scheduling failed');
     });
   }
 
@@ -122,7 +123,7 @@ class ReminderScheduler {
           desired[alert.id] = alert;
         }
       } catch (e, s) {
-        debugPrint('Planning reminder ${reminder.id} failed: $e\n$s');
+        CrashReporter.record(e, s, reason: 'Planning reminder failed');
       }
     }
 
@@ -200,7 +201,7 @@ class ReminderScheduler {
       await op();
       return true;
     } catch (e, s) {
-      debugPrint('$what failed: $e\n$s');
+      CrashReporter.record(e, s, reason: '$what failed');
       return false;
     }
   }
