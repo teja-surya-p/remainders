@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
@@ -7,6 +8,7 @@ import '../components/common/app_ui.dart';
 import '../components/permissions/alarm_permission_prompt.dart';
 import '../components/reminders/reminder_editor_dialog.dart';
 import '../components/reminders/reminder_tile.dart';
+import '../features.dart';
 import '../reminder_model.dart';
 import '../theme/app_motion.dart';
 import '../theme/app_tokens.dart';
@@ -23,23 +25,58 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
+typedef _Tab = ({IconData icon, String label, Widget page});
+
 class _HomePageState extends State<HomePage> {
   int _tabIndex = 0;
 
+  static const String _proLabel = 'Pro';
+
+  /// Only reachable while the paywall is on (switched-off features have no
+  /// tab).
   void _openSubscriptionTab() {
     if (!mounted) return;
-    setState(() => _tabIndex = 3);
+    final pro = _tabs().indexWhere((t) => t.label == _proLabel);
+    if (pro >= 0) setState(() => _tabIndex = pro);
   }
+
+  List<_Tab> _tabs() => [
+    (
+      icon: Icons.notifications_active_outlined,
+      label: 'Reminders',
+      page: _ReminderListTab(onOpenSubscription: _openSubscriptionTab),
+    ),
+    (
+      icon: Icons.calendar_month_outlined,
+      label: 'Calendar',
+      page: CalendarPage(onOpenSubscription: _openSubscriptionTab),
+    ),
+    if (Features.analytics)
+      (
+        icon: Icons.bar_chart_rounded,
+        label: 'Analytics',
+        page: AnalyticsPage(onOpenSubscription: _openSubscriptionTab),
+      ),
+    if (Features.paywall)
+      (
+        icon: Icons.workspace_premium_outlined,
+        label: _proLabel,
+        page: SubscriptionPage(
+          subscription: AppServices.subscription,
+          asTab: true,
+        ),
+      ),
+    (
+      icon: Icons.person_outline_rounded,
+      label: 'Profile',
+      page: ProfilePage(asTab: true, onOpenSubscription: _openSubscriptionTab),
+    ),
+  ];
 
   @override
   Widget build(BuildContext context) {
-    final pages = [
-      _ReminderListTab(onOpenSubscription: _openSubscriptionTab),
-      CalendarPage(onOpenSubscription: _openSubscriptionTab),
-      AnalyticsPage(onOpenSubscription: _openSubscriptionTab),
-      SubscriptionPage(subscription: AppServices.subscription, asTab: true),
-      ProfilePage(asTab: true, onOpenSubscription: _openSubscriptionTab),
-    ];
+    final tabs = _tabs();
+    final pages = [for (final tab in tabs) tab.page];
 
     return Scaffold(
       body: SafeArea(
@@ -70,6 +107,9 @@ class _HomePageState extends State<HomePage> {
               right: 16,
               bottom: 10,
               child: _GlassBottomNav(
+                items: [
+                  for (final tab in tabs) (icon: tab.icon, label: tab.label),
+                ],
                 currentIndex: _tabIndex,
                 onChanged: (next) => setState(() => _tabIndex = next),
               ),
@@ -242,7 +282,6 @@ class _ReminderListTabState extends State<_ReminderListTab> {
             })
             .toList(growable: false);
 
-        final cloudEnabled = AppServices.subscription.shouldUseCloudSync;
         final isPremium = AppServices.reminders.isPremiumMode;
 
         return Stack(
@@ -271,41 +310,14 @@ class _ReminderListTabState extends State<_ReminderListTab> {
                         ],
                       ),
                     ),
-                    AppSurfaceCard(
-                      dense: true,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 8,
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            cloudEnabled
-                                ? Icons.cloud_done_rounded
-                                : Icons.cloud_off_rounded,
-                            size: 14,
-                            color: cloudEnabled ? tone.success : tone.mutedText,
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            cloudEnabled ? 'Synced' : 'Local',
-                            style: Theme.of(context).textTheme.labelSmall
-                                ?.copyWith(
-                                  color: cloudEnabled
-                                      ? tone.success
-                                      : tone.mutedText,
-                                ),
-                          ),
-                        ],
-                      ),
-                    ),
+                    const _BackupChip(),
                     const SizedBox(width: 8),
-                    IconButton(
-                      onPressed: () => _openTestAlarm(context, reminders),
-                      tooltip: 'Test alarm',
-                      icon: const Icon(Icons.alarm_rounded),
-                    ),
+                    if (kDebugMode)
+                      IconButton(
+                        onPressed: () => _openTestAlarm(context, reminders),
+                        tooltip: 'Test alarm',
+                        icon: const Icon(Icons.alarm_rounded),
+                      ),
                     IconButton(
                       onPressed: () =>
                           setState(() => _searchOpen = !_searchOpen),
@@ -581,23 +593,58 @@ class _FilterChip extends StatelessWidget {
   }
 }
 
+/// Whether the reminders are backed up (signed in) or only on this phone.
+class _BackupChip extends StatelessWidget {
+  const _BackupChip();
+
+  @override
+  Widget build(BuildContext context) {
+    final tone = AppTone.of(context);
+    return ValueListenableBuilder<bool>(
+      valueListenable: AppServices.reminders.backupOn,
+      builder: (context, on, _) {
+        final color = on ? tone.success : tone.mutedText;
+        return AppSurfaceCard(
+          dense: true,
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                on ? Icons.cloud_done_rounded : Icons.smartphone_rounded,
+                size: 14,
+                color: color,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                on ? 'Backed up' : 'On this phone',
+                style: Theme.of(
+                  context,
+                ).textTheme.labelSmall?.copyWith(color: color),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
 class _GlassBottomNav extends StatelessWidget {
+  final List<({IconData icon, String label})> items;
   final int currentIndex;
   final ValueChanged<int> onChanged;
 
-  const _GlassBottomNav({required this.currentIndex, required this.onChanged});
+  const _GlassBottomNav({
+    required this.items,
+    required this.currentIndex,
+    required this.onChanged,
+  });
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final tone = AppTone.of(context);
-    const items = <({IconData icon, String label})>[
-      (icon: Icons.notifications_active_outlined, label: 'Reminders'),
-      (icon: Icons.calendar_month_outlined, label: 'Calendar'),
-      (icon: Icons.bar_chart_rounded, label: 'Analytics'),
-      (icon: Icons.workspace_premium_outlined, label: 'Pro'),
-      (icon: Icons.person_outline_rounded, label: 'Profile'),
-    ];
 
     return AnimatedContainer(
       duration: AppMotion.card,

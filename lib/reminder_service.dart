@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 
 import 'date_math.dart';
+import 'features.dart';
 import 'reminder_model.dart';
 import 'reminder_sounds.dart';
 import 'repeat_utils.dart';
@@ -168,6 +169,9 @@ class ReminderService {
   /// Backup of the device's reminders to the signed-in account.
   ReminderBackup? _backup;
 
+  /// True while signed in, i.e. while the reminders are being backed up.
+  final ValueNotifier<bool> backupOn = ValueNotifier<bool>(false);
+
   /// When the signed-in account was last synced on this phone; null when
   /// signed out or never.
   final ValueNotifier<DateTime?> lastBackupAt = ValueNotifier<DateTime?>(null);
@@ -175,8 +179,9 @@ class ReminderService {
   List<ReminderModel> _currentReminders = const [];
   List<ReminderEvent> _currentEvents = const [];
 
-  /// Premium features (advanced repeats, analytics, …).
-  bool get isPremiumMode => subscription.isPremium;
+  /// Premium features (advanced repeats, auto-adjust, no daily limit, …).
+  /// Everything is unlocked while the paywall is switched off (v1 is free).
+  bool get isPremiumMode => !Features.paywall || subscription.isPremium;
 
   User? get account => _account;
 
@@ -212,6 +217,7 @@ class ReminderService {
     _account = user;
     _backup?.dispose();
     _backup = null;
+    backupOn.value = false;
     lastBackupAt.value = null;
     if (user == null) return;
 
@@ -223,12 +229,10 @@ class ReminderService {
       remote: _remoteBackup(user.uid),
     );
     _backup = backup;
+    backupOn.value = true;
     lastBackupAt.value = await backup.lastSyncedAt();
     unawaited(syncBackup(force: true));
   }
-
-  /// True while signed in: the device's reminders are being backed up.
-  bool get isBackupOn => _backup != null;
 
   /// Downloads changes made on other devices and uploads this device's.
   /// Does nothing when signed out. Failures (e.g. offline) are only logged:

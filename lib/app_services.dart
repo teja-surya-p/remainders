@@ -1,6 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 
+import 'features.dart';
 import 'reminder_service.dart';
 import 'subscription_service.dart';
 import 'theme/theme_service.dart';
@@ -21,7 +22,9 @@ class AppServices {
     if (_initialized) return;
     _initialized = true;
     await theme.initialize();
-    await subscription.initialize();
+    // No purchases SDK runs while the paywall is off (see the privacy
+    // policy).
+    if (Features.paywall) await subscription.initialize();
     await reminders.initialize();
   }
 
@@ -35,6 +38,7 @@ class AppServices {
     // Backup first: it must not depend on the purchases service being
     // reachable.
     await reminders.attachAccount(user);
+    if (!Features.paywall) return;
     try {
       if (user == null) {
         await subscription.unbindUser();

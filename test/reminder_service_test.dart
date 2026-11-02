@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:snooze_app/features.dart';
 import 'package:snooze_app/reminder_model.dart';
 import 'package:snooze_app/reminder_service.dart';
 import 'package:snooze_app/storage/sqlite_reminder_store.dart';
@@ -18,6 +19,46 @@ void main() {
     SharedPreferences.setMockInitialValues({});
   });
   tearDown(() => tmp.delete(recursive: true));
+
+  test('v1 builds ship with the paywall, analytics and sharing off', () {
+    expect(Features.paywall, isFalse);
+    expect(Features.analytics, isFalse);
+    expect(Features.sharing, isFalse);
+  });
+
+  test('with the paywall off there is no daily limit and every repeat '
+      'type is allowed', () async {
+    final service = ReminderService(subscription: SubscriptionService());
+    await service.initialize(
+      store: SqliteReminderStore(
+        factory: databaseFactoryFfi,
+        path: p.join(tmp.path, 'free.db'),
+      ),
+    );
+    addTearDown(service.dispose);
+    expect(service.isPremiumMode, isTrue);
+
+    final tomorrow = DateTime.now().add(const Duration(days: 1));
+    final at = DateTime(tomorrow.year, tomorrow.month, tomorrow.day, 9);
+    // The old free plan allowed 5 a day.
+    for (var i = 0; i < 6; i++) {
+      await service.createReminder(
+        title: 'Reminder $i',
+        dueAt: at.add(Duration(minutes: i)),
+      );
+    }
+    // Formerly Pro-only: several weekdays and several times a day.
+    await service.createReminder(
+      title: 'Gym',
+      dueAt: at,
+      recurrence: ReminderRecurrence.fromJson({
+        'type': 'weekly',
+        'weekdays': [1, 3, 5],
+        'timesOfDay': [9 * 60, 18 * 60],
+      }),
+    );
+    expect(await service.listReminders(), hasLength(7));
+  });
 
   test('a miss recorded by the app and the background job at once counts '
       'once', () async {

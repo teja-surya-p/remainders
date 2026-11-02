@@ -1,15 +1,20 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import '../account/account_flows.dart';
 import '../app_services.dart';
 import '../components/common/app_ui.dart';
+import '../features.dart';
 import '../subscription_service.dart';
 import '../theme/app_tokens.dart';
 import '../theme/theme_service.dart';
 import 'legal_pages.dart';
 import 'sharing_page.dart';
 import 'subscription_page.dart';
+
+/// Read once: the installed app's version and build number.
+final Future<PackageInfo> _packageInfo = PackageInfo.fromPlatform();
 
 class ProfilePage extends StatelessWidget {
   final bool asTab;
@@ -124,25 +129,26 @@ class _ProfileBody extends StatelessWidget {
                       ],
                     ),
                   ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 5,
-                    ),
-                    decoration: BoxDecoration(
-                      color: isPremium
-                          ? cs.primary.withValues(alpha: 0.12)
-                          : cs.secondary.withValues(alpha: 0.7),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Text(
-                      isPremium ? 'Pro' : 'Free',
-                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: isPremium ? cs.primary : tone.mutedText,
-                        fontWeight: FontWeight.w700,
+                  if (Features.paywall)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 5,
+                      ),
+                      decoration: BoxDecoration(
+                        color: isPremium
+                            ? cs.primary.withValues(alpha: 0.12)
+                            : cs.secondary.withValues(alpha: 0.7),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        isPremium ? 'Pro' : 'Free',
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: isPremium ? cs.primary : tone.mutedText,
+                          fontWeight: FontWeight.w700,
+                        ),
                       ),
                     ),
-                  ),
                 ],
               ),
             ),
@@ -199,7 +205,7 @@ class _ProfileBody extends StatelessWidget {
               },
             ),
             const SizedBox(height: 10),
-            if (!isPremium)
+            if (Features.paywall && !isPremium)
               _MenuTile(
                 icon: Icons.workspace_premium_rounded,
                 iconColor: cs.primary,
@@ -220,21 +226,22 @@ class _ProfileBody extends StatelessWidget {
                   );
                 },
               ),
-            _MenuTile(
-              icon: Icons.link_rounded,
-              iconColor: tone.chart2,
-              iconBg: tone.chart2.withValues(alpha: 0.13),
-              label: 'Invite & Share',
-              onTap: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => SharingPage(
-                      onOpenSubscription: onOpenSubscription ?? () {},
+            if (Features.sharing)
+              _MenuTile(
+                icon: Icons.link_rounded,
+                iconColor: tone.chart2,
+                iconBg: tone.chart2.withValues(alpha: 0.13),
+                label: 'Invite & Share',
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => SharingPage(
+                        onOpenSubscription: onOpenSubscription ?? () {},
+                      ),
                     ),
-                  ),
-                );
-              },
-            ),
+                  );
+                },
+              ),
             _MenuTile(
               icon: Icons.notifications_active_rounded,
               iconColor: tone.chart3,
@@ -248,20 +255,21 @@ class _ProfileBody extends StatelessWidget {
                 );
               },
             ),
-            _MenuTile(
-              icon: Icons.sync_rounded,
-              iconColor: tone.chart4,
-              iconBg: tone.chart4.withValues(alpha: 0.13),
-              label: 'Refresh Subscription',
-              onTap: () async {
-                await AppServices.subscription.refreshEntitlement();
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Subscription refreshed')),
-                  );
-                }
-              },
-            ),
+            if (Features.paywall)
+              _MenuTile(
+                icon: Icons.sync_rounded,
+                iconColor: tone.chart4,
+                iconBg: tone.chart4.withValues(alpha: 0.13),
+                label: 'Refresh Subscription',
+                onTap: () async {
+                  await AppServices.subscription.refreshEntitlement();
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Subscription refreshed')),
+                    );
+                  }
+                },
+              ),
             _MenuTile(
               icon: Icons.privacy_tip_outlined,
               iconColor: tone.mutedText,
@@ -300,11 +308,19 @@ class _ProfileBody extends StatelessWidget {
             ],
             const SizedBox(height: 10),
             Center(
-              child: Text(
-                'Snooze v1.0.1',
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: tone.mutedText.withValues(alpha: 0.7),
-                ),
+              child: FutureBuilder<PackageInfo>(
+                future: _packageInfo,
+                builder: (context, snapshot) {
+                  final info = snapshot.data;
+                  return Text(
+                    info == null
+                        ? 'Snooze'
+                        : 'Snooze ${info.version} (${info.buildNumber})',
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: tone.mutedText.withValues(alpha: 0.7),
+                    ),
+                  );
+                },
               ),
             ),
           ],
