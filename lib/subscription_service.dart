@@ -309,7 +309,9 @@ class SubscriptionService extends ChangeNotifier {
         }
         await Purchases.logOut();
         _activeRcUserId = null;
-      } catch (_) {}
+      } catch (e) {
+        debugPrint('Purchases sign-out failed: $e');
+      }
     }
     final cached = _readCached();
     _setState(
@@ -604,7 +606,8 @@ class SubscriptionService extends ChangeNotifier {
   PurchasesErrorCode _safeErrorCode(PlatformException e) {
     try {
       return PurchasesErrorHelper.getErrorCode(e);
-    } catch (_) {
+    } catch (err) {
+      debugPrint('Unrecognised purchases error ${e.code}: $err');
       return PurchasesErrorCode.unknownError;
     }
   }

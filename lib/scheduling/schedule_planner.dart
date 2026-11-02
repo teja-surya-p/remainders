@@ -3,7 +3,7 @@
 library;
 
 import '../reminder_model.dart';
-import '../repeat_utils.dart';
+import '../reminders/recurrence.dart';
 import 'alert_payload.dart';
 
 class PlannerConfig {
@@ -162,31 +162,17 @@ ReminderPlan planReminder(
     }
 
     if (!reminder.recurrence.isRepeating) break;
-    final next = _nextAfter(reminder.recurrence, occurrence);
+    // Same rule the service uses when this occurrence is answered or missed.
+    final next = nextRecurringDue(
+      recurrence: reminder.recurrence,
+      from: occurrence.add(const Duration(minutes: 1)),
+      anchor: occurrence,
+    );
     if (next == null) break;
     occurrence = next;
   }
 
   return ReminderPlan(alerts: alerts);
-}
-
-/// Next occurrence strictly after [previous], using the same rule the
-/// reminder service applies when an occurrence is completed or missed, so
-/// alerts scheduled ahead match where the reminder will actually move.
-DateTime? _nextAfter(ReminderRecurrence recurrence, DateTime previous) {
-  final minutes = recurrence.timesOfDay.isNotEmpty
-      ? recurrence.timesOfDay.first
-      : previous.hour * 60 + previous.minute;
-  return nextOccurrence(
-    from: previous.add(const Duration(minutes: 1)),
-    type: recurrence.type,
-    days: recurrence.weekdays,
-    minutes: minutes,
-    intervalDays: recurrence.intervalDays,
-    timesOfDay: recurrence.timesOfDay,
-    anchorDate: previous,
-    endAt: recurrence.endAt,
-  );
 }
 
 String? _cleanBody(ReminderModel reminder) {

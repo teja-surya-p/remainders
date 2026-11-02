@@ -191,7 +191,8 @@ class Notifs {
           ? 'UTC'
           : (hours > 0 ? 'Etc/GMT-$hours' : 'Etc/GMT+${-hours}');
       tz.setLocalLocation(tz.getLocation(name));
-    } catch (_) {
+    } catch (e) {
+      debugPrint('Offset time zone unavailable, using UTC: $e');
       tz.setLocalLocation(tz.getLocation('UTC'));
     }
   }
@@ -503,12 +504,14 @@ class Notifs {
     if (android == null) return;
     try {
       _notificationsEnabled = await android.areNotificationsEnabled() ?? true;
-    } catch (_) {
+    } catch (e) {
+      debugPrint('Notification permission unknown: $e');
       _notificationsEnabled = true;
     }
     try {
       _canScheduleExact = await android.canScheduleExactNotifications() ?? true;
-    } catch (_) {
+    } catch (e) {
+      debugPrint('Exact alarm permission unknown: $e');
       _canScheduleExact = true;
     }
     if (!_notificationsEnabled) {

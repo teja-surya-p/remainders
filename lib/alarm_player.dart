@@ -1,4 +1,5 @@
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/foundation.dart';
 
 import 'reminder_sounds.dart';
 
@@ -40,7 +41,9 @@ class AlarmPlayer {
           .firstWhere((s) => s == PlayerState.playing)
           .timeout(const Duration(seconds: 3));
       return true;
-    } catch (_) {
+    } catch (e) {
+      // The caller keeps the notification's own sound playing instead.
+      debugPrint('Alarm sound did not start: $e');
       return false;
     }
   }
