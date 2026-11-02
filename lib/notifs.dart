@@ -141,17 +141,12 @@ class Notifs {
 
     if (Platform.isAndroid) {
       final android = _android();
-      // Only the POST_NOTIFICATIONS dialog appears on first launch. Exact
-      // alarms and full-screen alerts open separate Settings pages, so they
-      // are requested from the UI (requestAlarmPermissions), never while the
-      // scheduler is re-arming in the background.
-      try {
-        await android?.requestNotificationsPermission();
-      } catch (e) {
-        debugPrint('Notification permission request failed: $e');
-      }
-      await _refreshAndroidPermissionState(android);
+      // Channels first: alarms may be scheduled right after this, and a
+      // notification posted to a missing channel is silently dropped.
       await _createAndroidChannels(android);
+      // No permission dialog at start-up: onboarding and the reliability
+      // check ask in context (requestNotificationPermission).
+      await _refreshAndroidPermissionState(android);
     }
   }
 
@@ -371,26 +366,19 @@ class Notifs {
     );
   }
 
-  /// Asks for what alarms need. Call from the UI (it opens Settings pages
-  /// for exact alarms and full-screen alerts), never from background work.
-  static Future<NotificationPermissions> requestAlarmPermissions() async {
-    if (Platform.isAndroid) {
-      final android = _android();
-      final current = await permissions();
-      try {
-        if (!current.notificationsEnabled) {
-          await android?.requestNotificationsPermission();
-        }
-        if (!current.exactAlarmsAllowed) {
-          await android?.requestExactAlarmsPermission();
-        }
-        await android?.requestFullScreenIntentPermission();
-      } catch (e) {
-        debugPrint('Alarm permission request failed: $e');
-      }
-      await _refreshAndroidPermissionState(android);
+  /// Shows Android's notification permission dialog (Android 13+). True if
+  /// notifications are allowed afterwards. Once the user has declined twice
+  /// Android stops showing it; then only Settings can turn them on.
+  static Future<bool> requestNotificationPermission() async {
+    if (!Platform.isAndroid) return true;
+    final android = _android();
+    try {
+      await android?.requestNotificationsPermission();
+    } catch (e) {
+      debugPrint('Notification permission request failed: $e');
     }
-    return permissions();
+    await _refreshAndroidPermissionState(android);
+    return (await permissions()).notificationsEnabled;
   }
 
   static AndroidFlutterLocalNotificationsPlugin? _android() => _p

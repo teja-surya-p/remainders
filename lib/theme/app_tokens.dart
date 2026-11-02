@@ -3,7 +3,13 @@ import 'package:flutter/material.dart';
 class AppColors {
   AppColors._();
 
-  static const Color primary = Color(0xFFF5791A);
+  /// The vivid brand orange, for the launcher icon, store art and
+  /// decoration. Too light for text on white (2.75:1).
+  static const Color brand = Color(0xFFF5791A);
+
+  /// The same hue, dark enough for text and buttons on the light theme
+  /// (5.2:1 on white, 4.6:1 on the alternate surface: WCAG AA).
+  static const Color primary = Color(0xFFB05108);
   static const Color primaryDark = Color(0xFFF58B3A);
 
   static const Color lightBackground = Color(0xFFFCFAF8);

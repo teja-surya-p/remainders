@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 
 import '../app_services.dart';
+import '../components/common/time_format.dart';
 
 class SnoozeScreen extends StatefulWidget {
   final String reminderId;
@@ -119,7 +119,7 @@ class _SnoozeScreenState extends State<SnoozeScreen> {
               label: Text(
                 _exact == null
                     ? 'Pick date & time'
-                    : DateFormat('EEE, MMM d • h:mm a').format(_exact!),
+                    : formatDayAndTime(context, _exact!),
               ),
             ),
             const SizedBox(height: 10),

@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../../app_services.dart';
 import '../../date_math.dart';
 import '../../reminder_model.dart';
 import '../../reminder_service.dart';
 import '../../reminder_sounds.dart';
 import '../../sound_preview_player.dart';
 import '../common/app_ui.dart';
+import '../common/time_format.dart';
 
 class ReminderDraft {
   final String title;
@@ -18,6 +20,9 @@ class ReminderDraft {
   final String alarmSoundId;
   final String notificationSoundId;
 
+  /// Minutes before the reminder for a quiet heads-up; null for none.
+  final int? remindBeforeMinutes;
+
   ReminderDraft({
     required this.title,
     required this.dueAt,
@@ -27,7 +32,29 @@ class ReminderDraft {
     this.priority = ReminderPriority.medium,
     this.alarmSoundId = ReminderSounds.defaultAlarmSoundId,
     this.notificationSoundId = ReminderSounds.defaultNotificationSoundId,
+    this.remindBeforeMinutes,
   }) : recurrence = recurrence ?? ReminderRecurrence();
+}
+
+/// Opens the editor full screen. Resolves to 'created' after a save,
+/// 'premium_required' if the save needs Pro, or 'cancel'.
+Future<String?> showReminderEditor(
+  BuildContext context, {
+  required String titleText,
+  required Future<void> Function(ReminderDraft draft) onSave,
+  ReminderDraft? initial,
+}) {
+  return Navigator.of(context).push<String>(
+    MaterialPageRoute<String>(
+      fullscreenDialog: true,
+      builder: (_) => ReminderEditorDialog(
+        titleText: titleText,
+        premiumEnabled: AppServices.reminders.isPremiumMode,
+        initial: initial,
+        onSave: onSave,
+      ),
+    ),
+  );
 }
 
 class ReminderEditorDialog extends StatefulWidget {
@@ -61,6 +88,7 @@ class _ReminderEditorDialogState extends State<ReminderEditorDialog> {
   late ReminderPriority _priority;
   late String _alarmSoundId;
   late String _notificationSoundId;
+  int? _remindBefore;
   late final Set<int> _weekdays;
   late final List<int> _times;
 
@@ -85,6 +113,7 @@ class _ReminderEditorDialogState extends State<ReminderEditorDialog> {
     _notificationSoundId =
         initial?.notificationSoundId ??
         ReminderSounds.defaultNotificationSoundId;
+    _remindBefore = initial?.remindBeforeMinutes;
     _weekdays = {...(initial?.recurrence.weekdays ?? const <int>[])};
     _times = [...(initial?.recurrence.timesOfDay ?? const <int>[])]..sort();
     if (_times.isEmpty && _dueAt != null) {
@@ -220,7 +249,7 @@ class _ReminderEditorDialogState extends State<ReminderEditorDialog> {
   Widget build(BuildContext context) {
     final dueText = _dueAt == null
         ? 'Pick date & time'
-        : DateFormat('EEE, MMM d • h:mm a').format(_dueAt!);
+        : formatDayAndTime(context, _dueAt!);
 
     final typeOptions = <RepeatType>[
       RepeatType.none,
@@ -233,15 +262,29 @@ class _ReminderEditorDialogState extends State<ReminderEditorDialog> {
         _dueAt != null || (_repeatType != RepeatType.none && _times.isNotEmpty);
     final canSave = _title.text.trim().isNotEmpty && hasValidDateInput;
 
-    return AlertDialog(
-      insetPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 24),
-      title: AppSectionHeader(
-        title: widget.titleText,
-        subtitle: 'Set schedule, alert mode, and recurrence',
+    return Scaffold(
+      appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Close',
+          icon: const Icon(Icons.close_rounded),
+          onPressed: () => Navigator.pop(context, 'cancel'),
+        ),
+        title: Text(widget.titleText),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 12),
+            child: FilledButton(
+              onPressed: !canSave || _saving ? null : _save,
+              // The theme's buttons fill the width; app bar actions can't.
+              style: FilledButton.styleFrom(minimumSize: const Size(72, 40)),
+              child: const Text('Save'),
+            ),
+          ),
+        ],
       ),
-      content: SizedBox(
-        width: 560,
+      body: SafeArea(
         child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -283,6 +326,7 @@ class _ReminderEditorDialogState extends State<ReminderEditorDialog> {
                 children: [
                   Expanded(
                     child: DropdownButtonFormField<ReminderAlertMode>(
+                      isExpanded: true,
                       initialValue: _alertMode,
                       decoration: const InputDecoration(
                         labelText: 'Alert type',
@@ -310,6 +354,7 @@ class _ReminderEditorDialogState extends State<ReminderEditorDialog> {
                   const SizedBox(width: 10),
                   Expanded(
                     child: DropdownButtonFormField<ReminderPriority>(
+                      isExpanded: true,
                       initialValue: _priority,
                       decoration: const InputDecoration(
                         labelText: 'Alarm priority',
@@ -337,6 +382,24 @@ class _ReminderEditorDialogState extends State<ReminderEditorDialog> {
                 ],
               ),
               const SizedBox(height: 10),
+              DropdownButtonFormField<int?>(
+                initialValue: _remindBefore,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: 'Heads-up before',
+                  helperText: 'A quiet notification before it rings',
+                ),
+                onChanged: (value) => setState(() => _remindBefore = value),
+                items: [
+                  const DropdownMenuItem<int?>(child: Text('Off')),
+                  for (final minutes in const [5, 10, 30, 60])
+                    DropdownMenuItem<int?>(
+                      value: minutes,
+                      child: Text('$minutes minutes before'),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 10),
               AppSurfaceCard(
                 dense: true,
                 child: Column(
@@ -351,6 +414,7 @@ class _ReminderEditorDialogState extends State<ReminderEditorDialog> {
                       children: [
                         Expanded(
                           child: DropdownButtonFormField<String>(
+                            isExpanded: true,
                             initialValue: _alarmSoundId,
                             decoration: const InputDecoration(
                               labelText: 'Alarm sound',
@@ -382,6 +446,7 @@ class _ReminderEditorDialogState extends State<ReminderEditorDialog> {
                       children: [
                         Expanded(
                           child: DropdownButtonFormField<String>(
+                            isExpanded: true,
                             initialValue: _notificationSoundId,
                             decoration: const InputDecoration(
                               labelText: 'Notification sound',
@@ -424,6 +489,7 @@ class _ReminderEditorDialogState extends State<ReminderEditorDialog> {
                     ),
                     const SizedBox(height: 10),
                     DropdownButtonFormField<RepeatType>(
+                      isExpanded: true,
                       initialValue: _repeatType,
                       decoration: const InputDecoration(
                         labelText: 'Recurrence type',
@@ -514,7 +580,7 @@ class _ReminderEditorDialogState extends State<ReminderEditorDialog> {
                         spacing: 8,
                         runSpacing: 6,
                         children: _times.map((m) {
-                          final label = _formatMinute(m);
+                          final label = formatMinuteOfDay(context, m);
                           return InputChip(
                             label: Text(label),
                             onDeleted: _times.length <= 1
@@ -577,70 +643,61 @@ class _ReminderEditorDialogState extends State<ReminderEditorDialog> {
           ),
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context, 'cancel'),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          onPressed: !canSave || _saving
-              ? null
-              : () async {
-                  final dueAt = _resolveDueAtForSave();
-                  if (dueAt == null) {
-                    setState(() {
-                      _error =
-                          'Choose date & time, or set repeat with at least one time.';
-                    });
-                    return;
-                  }
-
-                  final intervalDays = int.tryParse(_intervalDays.text.trim());
-                  final recurrence = ReminderRecurrence(
-                    type: _repeatType,
-                    weekdays: _weekdays.toList(),
-                    intervalDays: _repeatType == RepeatType.interval
-                        ? intervalDays
-                        : null,
-                    timesOfDay: _times,
-                    endAt: widget.premiumEnabled ? _endAt : null,
-                  );
-
-                  final draft = ReminderDraft(
-                    title: _title.text.trim(),
-                    description: _desc.text.trim().isEmpty
-                        ? null
-                        : _desc.text.trim(),
-                    dueAt: dueAt,
-                    recurrence: recurrence,
-                    alertMode: _alertMode,
-                    priority: _priority,
-                    alarmSoundId: _alarmSoundId,
-                    notificationSoundId: _notificationSoundId,
-                  );
-
-                  setState(() {
-                    _saving = true;
-                    _error = null;
-                  });
-
-                  try {
-                    await widget.onSave(draft);
-                    if (context.mounted) Navigator.pop(context, 'created');
-                  } on PremiumRequiredException {
-                    if (context.mounted) {
-                      Navigator.pop(context, 'premium_required');
-                    }
-                  } catch (e) {
-                    if (mounted) setState(() => _error = e.toString());
-                  } finally {
-                    if (mounted) setState(() => _saving = false);
-                  }
-                },
-          child: const Text('Save'),
-        ),
-      ],
     );
+  }
+
+  Future<void> _save() async {
+    final dueAt = _resolveDueAtForSave();
+    if (dueAt == null) {
+      setState(() {
+        _error = 'Choose date & time, or set repeat with at least one time.';
+      });
+      return;
+    }
+
+    final intervalDays = int.tryParse(_intervalDays.text.trim());
+    final recurrence = ReminderRecurrence(
+      type: _repeatType,
+      weekdays: _weekdays.toList(),
+      intervalDays: _repeatType == RepeatType.interval ? intervalDays : null,
+      timesOfDay: _times,
+      endAt: widget.premiumEnabled ? _endAt : null,
+    );
+
+    final draft = ReminderDraft(
+      title: _title.text.trim(),
+      description: _desc.text.trim().isEmpty ? null : _desc.text.trim(),
+      dueAt: dueAt,
+      recurrence: recurrence,
+      alertMode: _alertMode,
+      priority: _priority,
+      alarmSoundId: _alarmSoundId,
+      notificationSoundId: _notificationSoundId,
+      remindBeforeMinutes: _remindBefore,
+    );
+
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+
+    try {
+      await widget.onSave(draft);
+      if (mounted) Navigator.pop(context, 'created');
+    } on PremiumRequiredException {
+      if (mounted) Navigator.pop(context, 'premium_required');
+    } on ReminderValidationException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    } catch (e) {
+      debugPrint('Saving the reminder failed: $e');
+      if (mounted) {
+        setState(
+          () => _error = "Couldn't save this reminder. Please try again.",
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
   }
 
   String _typeLabel(RepeatType type) {
@@ -654,14 +711,5 @@ class _ReminderEditorDialogState extends State<ReminderEditorDialog> {
       case RepeatType.interval:
         return 'Every N days';
     }
-  }
-
-  String _formatMinute(int minute) {
-    final h = (minute ~/ 60) % 24;
-    final m = minute % 60;
-    final suffix = h >= 12 ? 'PM' : 'AM';
-    final hour12 = h % 12 == 0 ? 12 : h % 12;
-    final mm = m.toString().padLeft(2, '0');
-    return '$hour12:$mm $suffix';
   }
 }

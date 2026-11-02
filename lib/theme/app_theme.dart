@@ -1,9 +1,17 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'app_tokens.dart';
 
 class AppTheme {
   AppTheme._();
+
+  /// Dark status-bar icons on the light theme, light ones on the dark theme.
+  static SystemUiOverlayStyle overlayStyleFor(Brightness brightness) =>
+      (brightness == Brightness.light
+              ? SystemUiOverlayStyle.dark
+              : SystemUiOverlayStyle.light)
+          .copyWith(statusBarColor: Colors.transparent);
 
   static ThemeData light() {
     const scheme = ColorScheme(
@@ -148,6 +156,9 @@ class AppTheme {
         ),
       ),
       appBarTheme: AppBarTheme(
+        // Transparent bars would otherwise get light status-bar icons on a
+        // light page.
+        systemOverlayStyle: overlayStyleFor(colorScheme.brightness),
         backgroundColor: Colors.transparent,
         foregroundColor: colorScheme.onSurface,
         elevation: 0,

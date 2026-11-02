@@ -23,6 +23,7 @@ class _SignInPageState extends State<SignInPage> {
     r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$',
   );
 
+  final _name = TextEditingController();
   final _email = TextEditingController();
   final _password = TextEditingController();
 
@@ -36,6 +37,7 @@ class _SignInPageState extends State<SignInPage> {
 
   @override
   void dispose() {
+    _name.dispose();
     _email.dispose();
     _password.dispose();
     super.dispose();
@@ -87,16 +89,19 @@ class _SignInPageState extends State<SignInPage> {
           password: password,
         );
       } else {
-        await FirebaseAuth.instance.createUserWithEmailAndPassword(
+        final cred = await FirebaseAuth.instance.createUserWithEmailAndPassword(
           email: email,
           password: password,
         );
+        final name = _name.text.trim();
+        if (name.isNotEmpty) await cred.user?.updateDisplayName(name);
       }
       _done();
     } on FirebaseAuthException catch (e) {
-      setState(() => _error = e.message ?? 'Auth failed.');
+      setState(() => _error = _authError(e));
     } catch (e) {
-      setState(() => _error = 'Auth failed: $e');
+      debugPrint('Email sign-in failed: $e');
+      setState(() => _error = 'Sign-in failed. Please try again.');
     } finally {
       if (mounted) {
         setState(() => _loading = false);
@@ -128,7 +133,7 @@ class _SignInPageState extends State<SignInPage> {
     } on GoogleAuthException catch (e) {
       setState(() => _error = e.message);
     } on FirebaseAuthException catch (e) {
-      setState(() => _error = e.message ?? 'Google sign-in failed.');
+      setState(() => _error = _authError(e));
     } catch (e) {
       debugPrint('Google sign-in failed: $e');
       setState(() => _error = 'Google sign-in failed. Please try again.');
@@ -163,7 +168,7 @@ class _SignInPageState extends State<SignInPage> {
       );
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
-      setState(() => _error = e.message ?? 'Unable to send reset email.');
+      setState(() => _error = _authError(e));
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = 'Unable to send reset email: $e');
@@ -197,6 +202,25 @@ class _SignInPageState extends State<SignInPage> {
     }
     return null;
   }
+
+  /// Firebase's own messages are written for developers.
+  String _authError(FirebaseAuthException e) => switch (e.code) {
+    'invalid-credential' ||
+    'wrong-password' ||
+    'user-not-found' ||
+    'invalid-login-credentials' => 'Wrong email or password.',
+    'email-already-in-use' =>
+      'An account with this email already exists. Sign in instead.',
+    'weak-password' => 'Choose a stronger password (at least 8 characters).',
+    'invalid-email' => "That email address doesn't look right.",
+    'user-disabled' => 'This account has been disabled.',
+    'network-request-failed' =>
+      "You're offline. Connect to the internet and try again.",
+    'too-many-requests' => 'Too many attempts. Wait a few minutes and retry.',
+    'account-exists-with-different-credential' =>
+      'This email is already used with another sign-in method.',
+    _ => 'Sign-in failed. Please try again.',
+  };
 
   /// Signed in: back to where the user came from.
   void _done() {
@@ -314,7 +338,10 @@ class _SignInPageState extends State<SignInPage> {
                           if (!_isLogin) ...[
                             const SizedBox(height: 12),
                             TextField(
+                              controller: _name,
                               enabled: !_loading,
+                              textCapitalization: TextCapitalization.words,
+                              autofillHints: const [AutofillHints.name],
                               decoration: const InputDecoration(
                                 labelText: 'Full name',
                                 hintText: 'Your name',

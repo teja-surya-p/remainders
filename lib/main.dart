@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'alarm_popup_service.dart';
 import 'app_services.dart';
@@ -11,6 +12,7 @@ import 'components/common/app_loading.dart';
 import 'crash_reporter.dart';
 import 'firebase_options.dart';
 import 'notifs.dart';
+import 'onboarding/onboarding_page.dart';
 import 'pages/home_page.dart';
 import 'reminder_scheduler.dart';
 import 'snooze_handler.dart';
@@ -36,6 +38,11 @@ class App extends StatelessWidget {
           theme: AppTheme.light(),
           darkTheme: AppTheme.dark(),
           themeMode: AppServices.theme.themeMode,
+          // Screens without an app bar get the right status-bar icons too.
+          builder: (context, child) => AnnotatedRegion<SystemUiOverlayStyle>(
+            value: AppTheme.overlayStyleFor(Theme.of(context).brightness),
+            child: child ?? const SizedBox.shrink(),
+          ),
           home: const _Bootstrap(),
         );
       },
@@ -57,8 +64,16 @@ class _BootstrapState extends State<_Bootstrap> {
   @override
   void initState() {
     super.initState();
-    _init = _initialize();
+    _init = _initializeAndReport();
   }
+
+  /// Start-up failures show a retry screen; the cause goes to the log and,
+  /// if Firebase got that far, to crash reporting.
+  Future<void> _initializeAndReport() =>
+      _initialize().catchError((Object e, StackTrace s) {
+        CrashReporter.record(e, s, reason: 'App start failed');
+        Error.throwWithStackTrace(e, s);
+      });
 
   Future<void> _initialize() async {
     // Works offline; only the optional sign-in and backup use it.
@@ -107,7 +122,7 @@ class _BootstrapState extends State<_Bootstrap> {
   void _retryInit() {
     setState(() {
       _handledLaunch = false;
-      _init = _initialize();
+      _init = _initializeAndReport();
     });
   }
 
@@ -128,7 +143,14 @@ class _BootstrapState extends State<_Bootstrap> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      'Init error: ${snapshot.error}',
+                      "Snooze couldn't start",
+                      style: Theme.of(context).textTheme.titleLarge,
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Please try again. If this keeps happening, restart '
+                      'your phone.',
                       textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 12),
@@ -170,6 +192,18 @@ class _AppShell extends StatefulWidget {
 
 class _AppShellState extends State<_AppShell> with WidgetsBindingObserver {
   StreamSubscription<User?>? _authSub;
+  late Future<bool> _onboarded = OnboardingState.isDone();
+
+  Future<void> _finishOnboarding() async {
+    await OnboardingState.markDone();
+    // Permissions may have changed: re-post alarms (exact if now allowed).
+    unawaited(ReminderScheduler.rearmNow());
+    if (mounted) {
+      setState(() {
+        _onboarded = Future.value(true);
+      });
+    }
+  }
 
   @override
   void initState() {
@@ -215,5 +249,16 @@ class _AppShellState extends State<_AppShell> with WidgetsBindingObserver {
   }
 
   @override
-  Widget build(BuildContext context) => const HomePage();
+  Widget build(BuildContext context) {
+    return FutureBuilder<bool>(
+      future: _onboarded,
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) return const AppLoadingScaffold(label: '');
+        if (snapshot.data == false) {
+          return OnboardingPage(onDone: _finishOnboarding);
+        }
+        return const HomePage();
+      },
+    );
+  }
 }

@@ -2,12 +2,13 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 
 import '../alarm_player.dart';
 import '../alarm_vibration.dart';
 import '../app_services.dart';
 import '../components/common/app_ui.dart';
+import '../components/common/time_format.dart';
+import '../crash_reporter.dart';
 import '../notifs.dart';
 import '../platform/lock_screen.dart';
 import '../reminder_model.dart';
@@ -210,14 +211,17 @@ class _AlarmScreenState extends State<AlarmScreen>
         expectedDueAt: widget.occurrence,
       );
       if (mounted) Navigator.pop(context);
-    } catch (e) {
+    } catch (e, s) {
       // Snooze didn't save, so nothing would ring later: ring again now.
+      CrashReporter.record(e, s, reason: 'Snooze from the alarm screen failed');
       await _startAlarmMedia();
       if (!mounted) return;
       setState(() => _processing = false);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Unable to snooze: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("Couldn't snooze, so the alarm keeps ringing."),
+        ),
+      );
     }
   }
 
@@ -265,9 +269,7 @@ class _AlarmScreenState extends State<AlarmScreen>
                   final snoozeCount = reminder?.consecutiveSnoozes ?? 0;
                   final exactLabel = _exactSnoozeAt == null
                       ? 'Pick exact date & time'
-                      : DateFormat(
-                          'EEE, MMM d • h:mm a',
-                        ).format(_exactSnoozeAt!);
+                      : formatDayAndTime(context, _exactSnoozeAt!);
 
                   return ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 560),
@@ -362,9 +364,10 @@ class _AlarmScreenState extends State<AlarmScreen>
                               borderRadius: BorderRadius.circular(99),
                             ),
                             child: Text(
-                              DateFormat(
-                                'h:mm a',
-                              ).format(reminder?.dueAt ?? DateTime.now()),
+                              formatTime(
+                                context,
+                                reminder?.dueAt ?? DateTime.now(),
+                              ),
                               style: Theme.of(context).textTheme.titleSmall,
                             ),
                           ),

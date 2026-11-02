@@ -263,6 +263,7 @@ class ReminderService {
     ReminderPriority priority = ReminderPriority.medium,
     String? alarmSoundId,
     String? notificationSoundId,
+    int? remindBeforeMinutes,
   }) async {
     final trimmedTitle = title.trim();
     if (trimmedTitle.isEmpty) {
@@ -304,6 +305,7 @@ class ReminderService {
       alarmSoundId: alarmSoundId ?? ReminderSounds.defaultAlarmSoundId,
       notificationSoundId:
           notificationSoundId ?? ReminderSounds.defaultNotificationSoundId,
+      remindBeforeMinutes: remindBeforeMinutes,
       createdAt: now,
       updatedAt: now,
       totalOccurrences: 0,

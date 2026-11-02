@@ -6,6 +6,7 @@ import '../account/account_flows.dart';
 import '../app_services.dart';
 import '../components/common/app_ui.dart';
 import '../features.dart';
+import '../reliability/reliability.dart';
 import '../subscription_service.dart';
 import '../theme/app_tokens.dart';
 import '../theme/theme_service.dart';
@@ -73,7 +74,7 @@ class _ProfileBody extends StatelessWidget {
             16,
             asTab ? 56 : 16,
             16,
-            asTab ? 112 : 24,
+            asTab ? 132 : 24,
           ),
           children: [
             Text(
@@ -246,14 +247,12 @@ class _ProfileBody extends StatelessWidget {
               icon: Icons.notifications_active_rounded,
               iconColor: tone.chart3,
               iconBg: tone.chart3.withValues(alpha: 0.13),
-              label: 'Notification Settings',
-              onTap: () {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Manage notifications from device settings.'),
-                  ),
-                );
-              },
+              label: 'Alarm reliability',
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => const ReliabilityCheckPage(),
+                ),
+              ),
             ),
             if (Features.paywall)
               _MenuTile(

@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import '../app_services.dart';
 import '../components/common/app_loading.dart';
 import '../components/common/app_ui.dart';
+import '../components/common/time_format.dart';
 import '../reminder_model.dart';
 import '../repeat_utils.dart';
 import '../theme/app_tokens.dart';
@@ -362,7 +363,7 @@ class _CalendarPageState extends State<CalendarPage> {
                               ),
                               const SizedBox(height: 2),
                               Text(
-                                DateFormat('h:mm a').format(entry.when),
+                                formatTime(context, entry.when),
                                 style: Theme.of(context).textTheme.bodySmall
                                     ?.copyWith(color: tone.mutedText),
                               ),

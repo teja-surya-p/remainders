@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 
 import '../../app_services.dart';
 import '../../reminder_model.dart';
 import '../../reminder_service.dart';
 import '../../theme/app_tokens.dart';
+import '../../theme/contrast.dart';
 import '../common/app_ui.dart';
+import '../common/time_format.dart';
 import 'reminder_editor_dialog.dart';
 
 class ReminderTile extends StatelessWidget {
@@ -22,37 +23,37 @@ class ReminderTile extends StatelessWidget {
 
   Future<void> _edit(BuildContext context) async {
     try {
-      final result = await showDialog<String>(
-        context: context,
-        builder: (_) => ReminderEditorDialog(
-          titleText: 'Edit reminder',
-          premiumEnabled: AppServices.reminders.isPremiumMode,
-          initial: ReminderDraft(
-            title: reminder.title,
-            description: reminder.description,
-            dueAt: reminder.dueAt,
-            recurrence: reminder.recurrence,
-            alertMode: reminder.alertMode,
-            priority: reminder.priority,
-            alarmSoundId: reminder.alarmSoundId,
-            notificationSoundId: reminder.notificationSoundId,
-          ),
-          onSave: (draft) async {
-            final updated = reminder.copyWith(
-              title: draft.title,
-              description: draft.description,
-              dueAt: draft.dueAt,
-              recurrence: draft.recurrence,
-              alertMode: draft.alertMode,
-              priority: draft.priority,
-              alarmSoundId: draft.alarmSoundId,
-              notificationSoundId: draft.notificationSoundId,
-              completed: false,
-              missed: false,
-            );
-            await AppServices.reminders.updateReminder(updated);
-          },
+      final result = await showReminderEditor(
+        context,
+        titleText: 'Edit reminder',
+        initial: ReminderDraft(
+          title: reminder.title,
+          description: reminder.description,
+          dueAt: reminder.dueAt,
+          recurrence: reminder.recurrence,
+          alertMode: reminder.alertMode,
+          priority: reminder.priority,
+          alarmSoundId: reminder.alarmSoundId,
+          notificationSoundId: reminder.notificationSoundId,
+          remindBeforeMinutes: reminder.remindBeforeMinutes,
         ),
+        onSave: (draft) async {
+          final updated = reminder.copyWith(
+            title: draft.title,
+            description: draft.description,
+            dueAt: draft.dueAt,
+            recurrence: draft.recurrence,
+            alertMode: draft.alertMode,
+            priority: draft.priority,
+            alarmSoundId: draft.alarmSoundId,
+            notificationSoundId: draft.notificationSoundId,
+            remindBeforeMinutes: draft.remindBeforeMinutes,
+            clearRemindBefore: draft.remindBeforeMinutes == null,
+            completed: false,
+            missed: false,
+          );
+          await AppServices.reminders.updateReminder(updated);
+        },
       );
       if (result == 'premium_required') {
         onOpenSubscription();
@@ -136,7 +137,7 @@ class ReminderTile extends StatelessWidget {
                   children: [
                     _MetaChip(
                       icon: Icons.schedule_rounded,
-                      label: DateFormat('h:mm a').format(reminder.dueAt),
+                      label: formatTime(context, reminder.dueAt),
                     ),
                     ..._alertModeIcons(context),
                     _MetaChip(
@@ -182,10 +183,16 @@ class ReminderTile extends StatelessWidget {
                       } on PremiumRequiredException {
                         onOpenSubscription();
                       } catch (e) {
+                        debugPrint('Streak recovery failed: $e');
                         if (context.mounted) {
-                          ScaffoldMessenger.of(
-                            context,
-                          ).showSnackBar(SnackBar(content: Text(e.toString())));
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text(
+                                "Couldn't recover the streak. Please try "
+                                'again.',
+                              ),
+                            ),
+                          );
                         }
                       }
                     },
@@ -379,7 +386,11 @@ class _MetaChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final bg = color ?? cs.secondary.withValues(alpha: 0.7);
-    final fg = foreground ?? AppTone.of(context).mutedText;
+    // Tinted labels must stay readable on their tint (WCAG AA).
+    final fg = readableOn(
+      foreground ?? AppTone.of(context).mutedText,
+      Color.alphaBlend(bg, cs.surface),
+    );
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
