@@ -12,4 +12,8 @@ abstract final class Features {
 
   /// Shared reminders and invites.
   static const bool sharing = bool.fromEnvironment('SNOOZE_SHARING');
+
+  /// Developer tools such as the Test alarm button. Debug builds only, and
+  /// only when asked for, so debug screenshots match the release app.
+  static const bool devTools = bool.fromEnvironment('SNOOZE_DEV_TOOLS');
 }

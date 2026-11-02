@@ -426,7 +426,7 @@ class _Header extends StatelessWidget {
           ),
         ),
         const _BackupChip(),
-        if (kDebugMode)
+        if (kDebugMode && Features.devTools)
           IconButton(
             onPressed: () => _openTestAlarm(context),
             tooltip: 'Test alarm',

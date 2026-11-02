@@ -175,3 +175,40 @@ const LegalDocument termsOfService = LegalDocument(
     LegalSection('Contact', 'Questions: $kLegalSupportEmail'),
   ],
 );
+
+/// The public "delete your account" page Google Play links to; it must work
+/// for people who no longer have the app.
+const LegalDocument accountDeletion = LegalDocument(
+  title: 'Delete your Snooze account',
+  effectiveDate: 'November 1, 2026',
+  sections: [
+    LegalSection(
+      'In the app',
+      '1. Open Snooze and go to Profile.\n'
+          '2. Tap Delete account and confirm.\n'
+          '3. Confirm it’s you (Google, or your password).\n'
+          'Your account and its backup are deleted right away. You can also '
+          'choose to remove your reminders from the phone.',
+    ),
+    LegalSection(
+      'Without the app',
+      'Email $kLegalSupportEmail from the address you signed in with and ask '
+          'us to delete your Snooze account. We’ll delete it within 30 '
+          'days and reply when it’s done.',
+    ),
+    LegalSection(
+      'What is deleted',
+      '• Your account (email address, name, account ID).\n'
+          '• The backup of your reminders and their history.\n'
+          '• Shared reminders you own; you are removed from others.',
+    ),
+    LegalSection(
+      'What is kept',
+      '• Reminders on your phone stay until you remove them or uninstall '
+          'Snooze; they were never only in your account.\n'
+          '• Crash reports contain no account data and expire after 90 '
+          'days.',
+    ),
+    LegalSection('Contact', 'Questions: $kLegalSupportEmail'),
+  ],
+);
