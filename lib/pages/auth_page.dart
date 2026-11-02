@@ -1,16 +1,16 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:google_sign_in/google_sign_in.dart';
 
+import '../account/google_auth.dart';
 import '../components/common/app_ui.dart';
 import '../theme/app_motion.dart';
 import '../theme/app_tokens.dart';
-import '../user_scope.dart';
 import '../user_store.dart';
 
+/// Optional sign-in, opened from Profile: it turns on backup. Closes itself
+/// with `true` once signed in.
 class SignInPage extends StatefulWidget {
   const SignInPage({super.key});
 
@@ -81,20 +81,18 @@ class _SignInPageState extends State<SignInPage> {
     });
 
     try {
-      final oldUser = FirebaseAuth.instance.currentUser;
       if (_isLogin) {
-        final cred = await FirebaseAuth.instance.signInWithEmailAndPassword(
+        await FirebaseAuth.instance.signInWithEmailAndPassword(
           email: email,
           password: password,
         );
-        await _mergeAnonymousData(oldUser, cred.user);
       } else {
-        final cred = await FirebaseAuth.instance.createUserWithEmailAndPassword(
+        await FirebaseAuth.instance.createUserWithEmailAndPassword(
           email: email,
           password: password,
         );
-        await _mergeAnonymousData(oldUser, cred.user);
       }
+      _done();
     } on FirebaseAuthException catch (e) {
       setState(() => _error = e.message ?? 'Auth failed.');
     } catch (e) {
@@ -113,27 +111,17 @@ class _SignInPageState extends State<SignInPage> {
     });
 
     try {
-      final oldUser = FirebaseAuth.instance.currentUser;
       if (kIsWeb) {
-        final provider = GoogleAuthProvider();
-        final cred = await FirebaseAuth.instance.signInWithPopup(provider);
-        await _mergeAnonymousData(oldUser, cred.user);
+        await FirebaseAuth.instance.signInWithPopup(GoogleAuthProvider());
       } else {
-        final googleUser = await GoogleSignIn().signIn();
-        if (googleUser == null) {
+        final credential = await GoogleAuth.credential();
+        if (credential == null) {
           setState(() => _loading = false);
           return;
         }
-        final googleAuth = await googleUser.authentication;
-        final credential = GoogleAuthProvider.credential(
-          accessToken: googleAuth.accessToken,
-          idToken: googleAuth.idToken,
-        );
-        final cred = await FirebaseAuth.instance.signInWithCredential(
-          credential,
-        );
-        await _mergeAnonymousData(oldUser, cred.user);
+        await FirebaseAuth.instance.signInWithCredential(credential);
       }
+      _done();
     } on PlatformException catch (e) {
       setState(() => _error = _friendlyGoogleError(e));
     } on FirebaseAuthException catch (e) {
@@ -220,24 +208,10 @@ class _SignInPageState extends State<SignInPage> {
     return null;
   }
 
-  Future<void> _mergeAnonymousData(User? oldUser, User? newUser) async {
-    if (oldUser == null || newUser == null) return;
-    if (!oldUser.isAnonymous) return;
-    if (oldUser.uid == newUser.uid) return;
-
-    final oldRef = FirebaseFirestore.instance.collection(
-      'users/${oldUser.uid}/reminders',
-    );
-    final newRef = FirebaseFirestore.instance.collection(
-      'users/${UserScope.key(newUser)}/reminders',
-    );
-    final snap = await oldRef.get();
-    if (snap.docs.isEmpty) return;
-
-    for (final doc in snap.docs) {
-      await newRef.doc(doc.id).set(doc.data(), SetOptions(merge: true));
-      await doc.reference.delete();
-    }
+  /// Signed in: back to where the user came from.
+  void _done() {
+    if (!mounted) return;
+    Navigator.of(context).maybePop(true);
   }
 
   @override
@@ -340,14 +314,12 @@ class _SignInPageState extends State<SignInPage> {
                             ],
                           ),
                           const SizedBox(height: 12),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
-                            children: const [
-                              Chip(label: Text('Cloud Sync')),
-                              Chip(label: Text('Smart Analytics')),
-                              Chip(label: Text('Cross-device')),
-                            ],
+                          Text(
+                            'Sign in to back up your reminders and get them '
+                            'back on a new phone. Snooze works without an '
+                            'account too.',
+                            style: Theme.of(context).textTheme.bodyMedium
+                                ?.copyWith(color: tone.mutedText),
                           ),
                           if (!_isLogin) ...[
                             const SizedBox(height: 12),
@@ -488,6 +460,17 @@ class _SignInPageState extends State<SignInPage> {
               ),
             ),
           ),
+          if (Navigator.of(context).canPop())
+            SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(4),
+                child: IconButton(
+                  tooltip: 'Close',
+                  icon: const Icon(Icons.close_rounded),
+                  onPressed: () => Navigator.of(context).maybePop(),
+                ),
+              ),
+            ),
         ],
       ),
     );

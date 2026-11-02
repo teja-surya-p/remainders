@@ -1,6 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../account/account_flows.dart';
 import '../app_services.dart';
 import '../components/common/app_ui.dart';
 import '../subscription_service.dart';
@@ -17,15 +18,15 @@ class ProfilePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      return const Scaffold(body: Center(child: Text('Not signed in')));
-    }
-
-    final body = _ProfileBody(
-      user: user,
-      asTab: asTab,
-      onOpenSubscription: onOpenSubscription,
+    // Works signed in or not; follows sign-in, sign-out and deletion live.
+    final body = StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.userChanges(),
+      initialData: FirebaseAuth.instance.currentUser,
+      builder: (context, snapshot) => _ProfileBody(
+        user: snapshot.data,
+        asTab: asTab,
+        onOpenSubscription: onOpenSubscription,
+      ),
     );
 
     if (asTab) {
@@ -40,7 +41,7 @@ class ProfilePage extends StatelessWidget {
 }
 
 class _ProfileBody extends StatelessWidget {
-  final User user;
+  final User? user;
   final bool asTab;
   final VoidCallback? onOpenSubscription;
 
@@ -59,7 +60,7 @@ class _ProfileBody extends StatelessWidget {
       valueListenable: AppServices.subscription.state,
       builder: (context, subState, _) {
         final isPremium = subState.isPremium;
-        final cloudEnabled = AppServices.subscription.shouldUseCloudSync;
+        final user = this.user;
 
         return ListView(
           padding: EdgeInsets.fromLTRB(
@@ -87,13 +88,16 @@ class _ProfileBody extends StatelessWidget {
                       borderRadius: BorderRadius.circular(16),
                     ),
                     alignment: Alignment.center,
-                    child: Text(
-                      _initials(user),
-                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        color: cs.primary,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
+                    child: user == null
+                        ? Icon(Icons.person_outline_rounded, color: cs.primary)
+                        : Text(
+                            _initials(user),
+                            style: Theme.of(context).textTheme.titleLarge
+                                ?.copyWith(
+                                  color: cs.primary,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                          ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
@@ -101,14 +105,18 @@ class _ProfileBody extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          user.displayName?.trim().isNotEmpty == true
+                          user == null
+                              ? 'Not signed in'
+                              : user.displayName?.trim().isNotEmpty == true
                               ? user.displayName!
                               : 'Snooze user',
                           style: Theme.of(context).textTheme.titleMedium,
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          user.email ?? 'No email',
+                          user == null
+                              ? 'Reminders are stored on this phone'
+                              : user.email ?? 'No email',
                           style: Theme.of(context).textTheme.bodySmall
                               ?.copyWith(color: tone.mutedText),
                         ),
@@ -138,67 +146,7 @@ class _ProfileBody extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 10),
-            AppSurfaceCard(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Cloud Sync',
-                    style: Theme.of(
-                      context,
-                    ).textTheme.labelMedium?.copyWith(color: tone.mutedText),
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Container(
-                        width: 38,
-                        height: 38,
-                        decoration: BoxDecoration(
-                          color: (cloudEnabled ? tone.success : tone.mutedText)
-                              .withValues(alpha: 0.15),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Icon(
-                          cloudEnabled
-                              ? Icons.cloud_done_rounded
-                              : Icons.cloud_off_rounded,
-                          size: 20,
-                          color: cloudEnabled ? tone.success : tone.mutedText,
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              cloudEnabled ? 'Connected' : 'Local only',
-                              style: Theme.of(context).textTheme.titleSmall,
-                            ),
-                            Text(
-                              cloudEnabled
-                                  ? 'Firestore sync active'
-                                  : 'Data is stored on this device',
-                              style: Theme.of(context).textTheme.bodySmall
-                                  ?.copyWith(color: tone.mutedText),
-                            ),
-                          ],
-                        ),
-                      ),
-                      Container(
-                        width: 8,
-                        height: 8,
-                        decoration: BoxDecoration(
-                          color: cloudEnabled ? tone.success : tone.mutedText,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
+            _BackupCard(signedIn: user != null),
             const SizedBox(height: 10),
             ListenableBuilder(
               listenable: AppServices.theme,
@@ -313,22 +261,24 @@ class _ProfileBody extends StatelessWidget {
                 }
               },
             ),
-            const SizedBox(height: 10),
-            FilledButton.tonalIcon(
-              onPressed: () async {
-                await FirebaseAuth.instance.signOut();
-                if (!context.mounted) return;
-                if (!asTab) {
-                  Navigator.pop(context);
-                }
-              },
-              style: FilledButton.styleFrom(
-                backgroundColor: cs.error.withValues(alpha: 0.1),
-                foregroundColor: cs.error,
+            if (user != null) ...[
+              const SizedBox(height: 10),
+              FilledButton.tonalIcon(
+                onPressed: () => signOutFlow(context),
+                style: FilledButton.styleFrom(
+                  backgroundColor: cs.error.withValues(alpha: 0.1),
+                  foregroundColor: cs.error,
+                ),
+                icon: const Icon(Icons.logout_rounded),
+                label: const Text('Sign out'),
               ),
-              icon: const Icon(Icons.logout_rounded),
-              label: const Text('Sign Out'),
-            ),
+              const SizedBox(height: 4),
+              TextButton(
+                onPressed: () => deleteAccountFlow(context),
+                style: TextButton.styleFrom(foregroundColor: cs.error),
+                child: const Text('Delete account'),
+              ),
+            ],
             const SizedBox(height: 10),
             Center(
               child: Text(
@@ -356,6 +306,137 @@ class _ProfileBody extends StatelessWidget {
     final email = user.email ?? 'SU';
     return email.substring(0, 2).toUpperCase();
   }
+}
+
+/// Backup status. Signed out: what signing in is for. Signed in: when the
+/// reminders were last backed up, and a way to do it now.
+class _BackupCard extends StatefulWidget {
+  const _BackupCard({required this.signedIn});
+
+  final bool signedIn;
+
+  @override
+  State<_BackupCard> createState() => _BackupCardState();
+}
+
+class _BackupCardState extends State<_BackupCard> {
+  bool _busy = false;
+
+  Future<void> _backUpNow() async {
+    setState(() => _busy = true);
+    final ok = await AppServices.reminders.backUpNow();
+    if (!mounted) return;
+    setState(() => _busy = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          ok
+              ? 'Backed up.'
+              : "Couldn't reach the backup. Your reminders are safe on this "
+                    'phone, and backup will try again later.',
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tone = AppTone.of(context);
+    final textTheme = Theme.of(context).textTheme;
+    final on = widget.signedIn;
+    final color = on ? tone.success : tone.mutedText;
+
+    return AppSurfaceCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Backup',
+            style: textTheme.labelMedium?.copyWith(color: tone.mutedText),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(
+                  on ? Icons.cloud_done_rounded : Icons.cloud_off_rounded,
+                  size: 20,
+                  color: color,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: ValueListenableBuilder<DateTime?>(
+                  valueListenable: AppServices.reminders.lastBackupAt,
+                  builder: (context, at, _) => Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        on ? 'Backup is on' : 'Backup is off',
+                        style: textTheme.titleSmall,
+                      ),
+                      Text(
+                        !on
+                            ? 'Get your reminders back on a new phone. Snooze '
+                                  'works fully without an account.'
+                            : at == null
+                            ? 'Not backed up yet'
+                            : 'Last backed up ${describeBackupTime(context, at)}',
+                        style: textTheme.bodySmall?.copyWith(
+                          color: tone.mutedText,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          if (on)
+            OutlinedButton.icon(
+              onPressed: _busy ? null : _backUpNow,
+              icon: _busy
+                  ? const SizedBox.square(
+                      dimension: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.backup_rounded),
+              label: const Text('Back up now'),
+            )
+          else
+            FilledButton.icon(
+              onPressed: () => openSignIn(context),
+              icon: const Icon(Icons.login_rounded),
+              label: const Text('Sign in to back up'),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// "just now", "5 min ago", "today at 9:50 AM", "on Fri, Oct 30 at 21:14".
+/// Follows the phone's 24-hour setting.
+@visibleForTesting
+String describeBackupTime(BuildContext context, DateTime at, {DateTime? now}) {
+  final current = now ?? DateTime.now();
+  final minutes = current.difference(at).inMinutes;
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return '$minutes min ago';
+  final localizations = MaterialLocalizations.of(context);
+  final time = localizations.formatTimeOfDay(
+    TimeOfDay.fromDateTime(at),
+    alwaysUse24HourFormat: MediaQuery.alwaysUse24HourFormatOf(context),
+  );
+  if (DateUtils.isSameDay(at, current)) return 'today at $time';
+  return 'on ${localizations.formatMediumDate(at)} at $time';
 }
 
 class _ThemeOption extends StatelessWidget {

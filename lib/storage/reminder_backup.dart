@@ -355,9 +355,19 @@ class ReminderBackup {
     _pushTimer?.cancel();
   }
 
-  /// When this device last finished a sync, if ever.
-  static Future<DateTime?> lastSyncedAt(SqliteReminderStore store) async {
-    final value = await store.readMeta(metaLastSync);
+  /// When this device last finished a sync with this account, if ever.
+  Future<DateTime?> lastSyncedAt() async {
+    if (await local.readMeta(metaAccount) != uid) return null;
+    final value = await local.readMeta(metaLastSync);
     return value == null ? null : DateTime.tryParse(value);
   }
+
+  /// Makes the next sync download and compare everything again, e.g. after
+  /// part of the backup was deleted.
+  static Future<void> forget(SqliteReminderStore store) => store.writeMeta({
+    metaAccount: null,
+    metaRemindersCursor: null,
+    metaEventsCursor: null,
+    metaLastSync: null,
+  });
 }

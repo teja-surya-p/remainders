@@ -168,6 +168,10 @@ class ReminderService {
   /// Backup of the device's reminders to the signed-in account.
   ReminderBackup? _backup;
 
+  /// When the signed-in account was last synced on this phone; null when
+  /// signed out or never.
+  final ValueNotifier<DateTime?> lastBackupAt = ValueNotifier<DateTime?>(null);
+
   List<ReminderModel> _currentReminders = const [];
   List<ReminderEvent> _currentEvents = const [];
 
@@ -208,15 +212,18 @@ class ReminderService {
     _account = user;
     _backup?.dispose();
     _backup = null;
+    lastBackupAt.value = null;
     if (user == null) return;
 
     await initialize();
     if (_account?.uid != user.uid) return; // changed again meanwhile
-    _backup = ReminderBackup(
+    final backup = ReminderBackup(
       uid: user.uid,
       local: _activeStoreOrThrow(),
       remote: _remoteBackup(user.uid),
     );
+    _backup = backup;
+    lastBackupAt.value = await backup.lastSyncedAt();
     unawaited(syncBackup(force: true));
   }
 
@@ -237,11 +244,52 @@ class ReminderService {
           '${result.pushed} uploaded.',
         );
       }
+      if (identical(backup, _backup)) {
+        lastBackupAt.value = await backup.lastSyncedAt();
+      }
       return result;
     } catch (e) {
       debugPrint('Backup sync failed: $e');
       return null;
     }
+  }
+
+  /// A full sync that also waits up to [timeout] for the server to confirm
+  /// every upload. False if signed out, offline, or not all confirmed.
+  Future<bool> backUpNow({
+    Duration timeout = const Duration(seconds: 10),
+  }) async {
+    if (await syncBackup(force: true) == null) return false;
+    return flushBackup(timeout: timeout);
+  }
+
+  /// Sends changes not yet backed up and waits up to [timeout] for the
+  /// server, e.g. before signing out. True when nothing is left only on
+  /// this phone (always true when signed out: there is nowhere to send).
+  Future<bool> flushBackup({
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    final backup = _backup;
+    if (backup == null) return true;
+    try {
+      await backup.pushNow();
+      await backup.uploadsSettled().timeout(timeout);
+    } catch (e) {
+      debugPrint('Backup not finished: $e');
+    }
+    final store = _activeStoreOrThrow();
+    return (await store.listDirtyReminders()).isEmpty &&
+        (await store.listDirtyEvents()).isEmpty;
+  }
+
+  /// Makes the next backup download and compare everything again.
+  Future<void> forgetBackupState() async {
+    await ReminderBackup.forget(_activeStoreOrThrow());
+  }
+
+  /// Deletes every reminder and all history on this phone (not the backup).
+  Future<void> wipeDevice() async {
+    await _activeStoreOrThrow().wipe();
   }
 
   Future<void> _attachStreams() async {
